@@ -123,6 +123,9 @@ class PetRenderer:
 
     def bubble_visible(self):
         if self.presentation_previews or self.bubble_window.edge_resize.active: return True
+        # 会话完成通知必须弹出来告诉用户是哪个对话，不受气泡模式（off / 纯音频）限制。
+        heading=getattr(self,'notification_heading',None)
+        if callable(heading) and heading(): return True
         b=self.bubble_binding(); elapsed=time.monotonic()-self.controller.started
         if b['bubble_mode']=='off': return False
         if self.voice_bubble(): return True

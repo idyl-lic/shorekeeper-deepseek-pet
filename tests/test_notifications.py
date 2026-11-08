@@ -26,9 +26,11 @@ class NotificationWidgetTests(unittest.TestCase):
     def event(self,name):return dict(state='done',thread_id=name,turn_id='turn-'+name,started=101,ended=103,title=name)
     def test_completion_queue_preserves_gifs_context_and_resumes_running_task(self):
         p=self.pet;p.on_status(self.status([self.event('Project A'),self.event('Project B')]))
-        self.assertEqual(p.state,'done');self.assertEqual(p.animation_id,p.binding('done')['asset']);self.assertEqual(p.bubble_text(),'Project A 完成')
+        self.assertEqual(p.state,'done');self.assertEqual(p.animation_id,p.binding('done')['asset'])
+        # 本 fork：完成通知的气泡会在正文前标明会话名，正文本身保持不变
+        self.assertIn('「Project A」已完成',p.bubble_text());self.assertTrue(p.bubble_text().endswith('Project A 完成'),p.bubble_text())
         p.on_status(self.status());self.assertEqual(p.state,'done')
-        p.notification_until=0;p.tick();self.assertEqual(p.bubble_text(),'Project B 完成')
+        p.notification_until=0;p.tick();self.assertIn('「Project B」已完成',p.bubble_text());self.assertTrue(p.bubble_text().endswith('Project B 完成'),p.bubble_text())
         p.notification_until=0;p.tick();self.assertEqual(p.state,'writing');self.assertEqual(p.animation_id,p.binding('writing')['asset'])
         p.on_status(self.status([self.event('Project A')]));self.assertFalse(p.notifications);self.assertIsNone(p.notification)
     def test_busy_audio_finishes_before_notification_and_each_notification_finishes_its_audio(self):

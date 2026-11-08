@@ -565,9 +565,25 @@ class Pet(PetRenderer,QWidget):
         if not self.options['show_quota']: return ''
         return '*表示额度未更新\n拖动余额框修改大小\n点击余额框刷新余额'
 
+    def notification_heading(self):
+        """任务结束时标明是哪个会话，例如 「检查连接是否正常」已完成。"""
+        note=self.notification
+        if not note: return ''
+        title=(note.get('title') or '').strip()
+        if not title: return ''
+        if len(title)>24: title=title[:23]+'…'
+        label={'done':'已完成','error':'出错了','paused':'已暂停'}.get(note.get('state'),'')
+        return '「%s」%s' % (title,label)
+
     def bubble_text(self):
         if hasattr(self,'bubble_window') and self.bubble_window.edge_resize.active: return self.bubble_window.edge_resize.text
         if self.presentation_previews: return '这是气泡宽度预览。\n拖动左右边缘试试看，长台词会自动换行。'
+        body=self.bubble_body()
+        heading=self.notification_heading()
+        if not heading: return body
+        return heading if not body else heading+'\n'+body
+
+    def bubble_body(self):
         b=self.binding(self.state)
         if self.voice_bubble():
             paired=clip_bubble_text(self.voice.selected_clip)

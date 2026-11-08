@@ -59,12 +59,35 @@ export class PetState {
       if (!value.active) this.sessions.delete(id);
     }
   }
-  snapshot() {
-    const now = this.clock();
-    return {sessions: [...this.sessions.values()].map(({tools, approvals, held, hold_until, ...r}) => ({
-      ...r, state: r.active && r.state === 'thinking' && now < hold_until ? held : r.state,
-      message: '', stale: false,
-    })), events: this.events, sequence: this.sequence};
+  // `catalog` is the Harness session list (every session known to the client,
+  // not only those that emitted an event since this plugin loaded). It fills in
+  // idle conversations so the desktop pet can show one complete status list.
+  // `archived` holds ids the user archived in Harness; they are dropped from
+  // both sources so an archived conversation never shows up or counts.
+  snapshot(catalog = [], archived = null) {
+    const now = this.clock(), rows = new Map();
+    const hidden = archived instanceof Set ? archived
+      : new Set(Array.isArray(archived) ? archived.map(String) : []);
+    for (const entry of Array.isArray(catalog) ? catalog : []) {
+      const id = entry && entry.id;
+      if (!id || rows.has(id) || hidden.has(String(id))) continue;
+      const stamp = Number(entry.updatedAt) > 0 ? Number(entry.updatedAt) / 1000 : 0;
+      rows.set(id, {thread_id: id, title: entry.title || `DeepSeek 会话 ${rows.size + 1}`,
+        turn_id: '', state: entry.running ? 'working' : 'idle', active: Boolean(entry.running),
+        started: 0, ended: 0, last_event: stamp, updated: stamp, revision: 0, live: false});
+    }
+    for (const row of this.sessions.values()) {
+      if (hidden.has(String(row.thread_id))) continue;
+      const {tools, approvals, held, hold_until, ...rest} = row;
+      // 实时行的标题只是占位名，目录里已有真实标题时沿用，别把它覆盖成「DeepSeek 会话 N」。
+      const known = rows.get(row.thread_id);
+      rows.set(row.thread_id, {...rest, title: (known && known.title) || rest.title,
+        state: row.active && row.state === 'thinking' && now < hold_until ? held : row.state,
+        updated: rest.last_event || 0, live: true});
+    }
+    const sessions = [...rows.values()].map(r => ({...r, message: '', stale: false}))
+      .sort((a, b) => (b.last_event || 0) - (a.last_event || 0));
+    return {sessions, events: this.events, sequence: this.sequence};
   }
 }
 

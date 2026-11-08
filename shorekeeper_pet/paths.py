@@ -1,11 +1,12 @@
 import os,pathlib,sys
 ROOT=pathlib.Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else pathlib.Path(__file__).resolve().parents[1]
+if getattr(sys,'frozen',False) and ROOT.parent.name=='.programs':ROOT=ROOT.parent.parent
 DSH_HOME=pathlib.Path(os.environ.get('DSH_HOME',pathlib.Path.home()/'.dsh'))
-VERSION='0.1.2'
+VERSION='0.6.2'
 APP_NAME='守岸人DeepSeek桌宠启动'
 EXECUTABLE_NAME=APP_NAME+'.exe'
 PORTABLE_DIRNAME='守岸人DeepSeek桌宠'
 AUDIO_SESSION_NAME='守岸人 · DeepSeek'
 APPLICATION_ID='Doya16.Shorekeeper.DeepSeek'
 
-UPDATE_REPOSITORY='Doya16/shorekeeper-deepseek-pet'
+UPDATE_REPOSITORY='idyl-lic/shorekeeper-deepseek-pet'

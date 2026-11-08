@@ -13,9 +13,9 @@ class Jobs(QObject):
     finished=Signal(str); failed=Signal(str)
 
 class Preferences(QDialog):
-    def __init__(self,pet):
+    def __init__(self,pet,catalog,assets,root):
         super().__init__(None); self.pet=pet; self.loading=True; self.controls={}; self.buttons=[]
-        self.setWindowTitle('守岸人 · 外观、声音与迁移'); self.setWindowIcon(pet.icon); self.resize(790,740); self.setMinimumSize(660,530)
+        self.setWindowTitle(AUDIO_SESSION_NAME+' · 设置'); self.setWindowIcon(pet.icon); self.resize(1120,850); self.setMinimumSize(920,650)
         layout=QVBoxLayout(self); layout.setContentsMargins(20,18,20,18)
         title=QLabel('把陪伴调整成你喜欢的样子'); title.setObjectName('settingsTitle'); layout.addWidget(title)
         self.tabs=QTabWidget(); layout.addWidget(self.tabs,1)
@@ -31,7 +31,21 @@ class Preferences(QDialog):
         visual.addRow('角色基础大小（100%）',self.spin('pet_size',140,420,' px'))
         add=QPushButton('添加本地字体文件…'); add.clicked.connect(self.add_font); visual.addRow(add)
         note=QLabel('已内置站酷快乐体与霞鹜文楷，随迁移包携带，无需安装到系统。单个状态也可以单独设置字体与字号。'); note.setWordWrap(True); visual.addRow(note)
-        voice=self.tab('声音')
+        from .studio import BindingEditor
+        self.editor=BindingEditor(pet,catalog,assets,root,parent=self.tabs)
+        self.tabs.addTab(self.editor,'交互工作室')
+        voice=self.tab('桌面与声音')
+        icon_style=QComboBox();icon_style.addItem('APP 小标','badged');icon_style.addItem('纯净图标','clean')
+        icon_style.currentIndexChanged.connect(lambda:self.change('tray_icon_style',icon_style.currentData()));self.controls['tray_icon_style']=icon_style;voice.addRow('底部栏与托盘图标',icon_style)
+        muted=QCheckBox('安静陪伴（静音）'); muted.toggled.connect(lambda value:self.change('audio_muted',value)); self.controls['audio_muted']=muted; voice.addRow(muted)
+        locked=QCheckBox('锁定桌宠'); locked.toggled.connect(lambda value:self.change('interaction_locked',value)); self.controls['interaction_locked']=locked; voice.addRow(locked)
+        voice.addRow('锁定悬停透明度',self.spin('locked_hover_transparency',0,95,' %'))
+        voice.addRow('锁按钮大小',self.spin('lock_button_size',50,200,' %'))
+        voice.addRow('锁按钮透明度',self.spin('lock_button_transparency',0,90,' %'))
+        tip=QLabel('静音立即停止声音并暂停后续播报与试听，取消后恢复原音量。锁定后，角色区域的点击会穿透到下方窗口，鼠标移入时淡化；任务状态与完成提醒继续。小锁仍可解锁，余额框仍可点击刷新。也可从托盘打开设置解锁。'); tip.setWordWrap(True); voice.addRow(tip)
+        self.top=QCheckBox('保持置顶'); self.top.toggled.connect(lambda value:pet.set_top(value) if not self.loading else None); voice.addRow(self.top)
+        self.notes=QCheckBox('气泡显示已公开的任务进度'); self.notes.toggled.connect(lambda value:pet.set_notes(value) if not self.loading else None); voice.addRow(self.notes)
+        self.pack=QComboBox(); self.pack.addItem('163 · 小小守岸人','163'); self.pack.addItem('GB0227 · 近景表情','GB0227'); self.pack.currentIndexChanged.connect(lambda:pet.set_pack(self.pack.currentData()) if not self.loading else None); voice.addRow('默认表情风格',self.pack)
         enabled=QCheckBox('开启本地语音提醒'); enabled.toggled.connect(lambda v:self.change('audio_enabled',v)); self.controls['audio_enabled']=enabled; voice.addRow(enabled)
         voice.addRow('音量',self.spin('volume',0,100,' %'))
         voice.addRow('同一状态最短播报间隔',self.spin('audio_cooldown',0,300,' 秒'))
@@ -40,6 +54,7 @@ class Preferences(QDialog):
         stop=QPushButton('停止当前声音'); stop.clicked.connect(pet.voice.stop); voice.addRow(stop)
         transfer=self.tab('保存与迁移')
         note=QLabel('修改会自动保存。你也可以立即保存快照，或把 GIF、字体、已绑定音频和配置一起打包。便携包还包含 Windows 运行程序。'); note.setWordWrap(True); transfer.addRow(note)
+        self.add_button(transfer,'创建桌面快捷方式',self.create_shortcut)
         self.add_button(transfer,'立即保存全部配置',self.save_now)
         self.add_button(transfer,'保存一份配置快照（JSON）',self.snapshot)
         self.add_button(transfer,'导出配置与素材包（ZIP）',lambda:self.export(False))
@@ -49,6 +64,8 @@ class Preferences(QDialog):
         connect=self.tab('连接 DeepSeek')
         self.add_button(connect,'安装 / 更新 Harness 连接插件',self.install_bridge)
         note=QLabel('首次使用：登录官方 DeepSeek Harness，然后从托盘完全退出，点击上方安装按钮，再重新打开客户端。换电脑或更新连接插件时同样操作。'); note.setWordWrap(True); connect.addRow(note)
+        exit_client=QCheckBox('随 DeepSeek 完全退出而关闭');exit_client.toggled.connect(lambda value:self.change('exit_with_deepseek',value));self.controls['exit_with_deepseek']=exit_client;connect.addRow(exit_client)
+        close_tip=QLabel('客户端完全退出约 8–10 秒后关闭桌宠；关闭窗口但仍在托盘运行时继续陪伴。手动先打开桌宠时，会等待客户端至少运行一次。');close_tip.setWordWrap(True);connect.addRow(close_tip)
         launch=QCheckBox('随 DeepSeek 启动桌宠'); launch.toggled.connect(lambda value:self.change('launch_with_deepseek',value)); self.controls['launch_with_deepseek']=launch; connect.addRow(launch)
         note=QLabel('勾选后，登录 Windows 时会在后台等待 DeepSeek 打开，再启动桌宠。取消勾选会移除本机的启动联动。该选项随配置迁移，在新电脑首次手动启动桌宠后恢复。'); note.setWordWrap(True); connect.addRow(note)
         self.sessions=QComboBox(); self.sessions.currentIndexChanged.connect(self.select_thread); connect.addRow('跟随的会话',self.sessions)
@@ -59,16 +76,27 @@ class Preferences(QDialog):
         reconnect=QPushButton('应用连接并刷新余额'); reconnect.clicked.connect(pet.refresh_quota); connect.addRow(reconnect)
         self.connection_status=QLabel(); self.connection_status.setWordWrap(True); connect.addRow(self.connection_status)
         updates=self.tab('版本与更新')
+        source=QComboBox()
+        for text,value in [('自动选择（推荐）','auto'),('GitHub 官方源','github'),('镜像加速（中国大陆网络）','mirror')]:source.addItem(text,value)
+        source.currentIndexChanged.connect(lambda:self.change('update_source',source.currentData()));self.controls['update_source']=source;updates.addRow('更新来源',source)
+        source_tip=QLabel('自动模式先尝试 GitHub，无法取得结果时切换镜像。镜像由第三方 GH-Proxy 提供，只负责传输；一键更新始终校验发布者签名，校验失败不会安装。也可手动固定来源。');source_tip.setWordWrap(True);updates.addRow(source_tip)
         updates.addRow(QLabel(AUDIO_SESSION_NAME+'  ·  当前版本 v'+VERSION))
-        automatic=QCheckBox('每次启动时检查 GitHub 更新'); automatic.toggled.connect(lambda value:self.change('check_updates_on_start',value)); self.controls['check_updates_on_start']=automatic; updates.addRow(automatic)
+        automatic=QCheckBox('每次启动时检查更新'); automatic.toggled.connect(lambda value:self.change('check_updates_on_start',value)); self.controls['check_updates_on_start']=automatic; updates.addRow(automatic)
+        periodic=QCheckBox('定时检查更新');periodic.toggled.connect(lambda value:self.change('check_updates_periodic',value));self.controls['check_updates_periodic']=periodic;updates.addRow(periodic)
+        updates.addRow('检查间隔',self.spin('update_interval_hours',1,168,' 小时'))
+        install=QPushButton('一键更新');install.clicked.connect(pet.updates.install);install.setEnabled(not pet.updates.installing);pet.updates.install_changed.connect(install.setDisabled);updates.addRow(install)
         check=QPushButton('立即检查更新'); check.clicked.connect(lambda:pet.updates.check(True)); check.setEnabled(not pet.updates.busy); pet.updates.busy_changed.connect(lambda busy:check.setEnabled(not busy)); updates.addRow(check)
         self.update_status=QLabel(pet.updates.status); self.update_status.setWordWrap(True); pet.updates.status_changed.connect(self.update_status.setText); updates.addRow(self.update_status)
         restore=QPushButton('恢复已忽略版本的提醒'); restore.clicked.connect(lambda:self.change('ignored_update_version','')); updates.addRow(restore)
-        tip=QLabel('有新版时显示提示，检查失败不会打断使用。更新页面中请选择适用于当前版本的程序补丁；使用完整包时，请解压到新目录，再导入自己的配置与素材。'); tip.setWordWrap(True); updates.addRow(tip)
+        tip=QLabel('发现新版时显示无声常驻气泡，语音台词结束后恢复。点击“一键更新”或气泡中的“更新并重启守岸人”，自动下载程序更新、保留配置素材并重启。“今日不再提醒”在当天及当天重启后保持生效。'); tip.setWordWrap(True); updates.addRow(tip)
         self.status=QLabel('设置自动保存'); self.status.setWordWrap(True); layout.addWidget(self.status)
         close=QPushButton('完成'); close.clicked.connect(self.hide); layout.addWidget(close)
         self.jobs=Jobs(); self.jobs.finished.connect(self.job_finished); self.jobs.failed.connect(self.job_failed)
         self.refresh_controls(); self.loading=False; self.apply_style()
+    def select_page(self,title):
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index)==title: self.tabs.setCurrentIndex(index); break
+
     def tab(self,title):
         scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); body.setObjectName('settingsBody'); form=QFormLayout(body); form.setContentsMargins(16,18,16,18); form.setSpacing(16); form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows); form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow); scroll.setWidget(body); self.tabs.addTab(scroll,title); return form
     def install_bridge(self):
@@ -106,7 +134,8 @@ class Preferences(QDialog):
             elif isinstance(control,QSpinBox): control.setValue(round(value))
             elif isinstance(control,QCheckBox): control.setChecked(bool(value))
             else: control.setText(value)
-        self.refresh_threads(); self.size_control.refresh()
+        self.top.setChecked(self.pet.on_top); self.notes.setChecked(self.pet.show_notes); self.pack.setCurrentIndex(self.pack.findData(self.pet.pack))
+        self.refresh_threads(); self.size_control.refresh(); self.editor.update_timing()
         self.connection_status.setText('当前数据目录：'+str(self.pet.monitor.home)); self.loading=False
     def refresh_threads(self):
         selected=self.pet.monitor.selected; self.sessions.blockSignals(True); self.sessions.clear(); self.sessions.addItem('自动跟随最近活动（推荐）','auto')
@@ -123,6 +152,13 @@ class Preferences(QDialog):
         except OSError as error:
             self.refresh_controls(); self.status.setText('设置未更改：'+str(error))
     def apply_style(self): self.setStyleSheet(stylesheet(self.pet.options)+'QLabel#settingsTitle{font-size:25px;font-weight:600;color:#2e5280;}')
+    def create_shortcut(self):
+        from .shortcuts import create_desktop_shortcut
+        self.set_busy(True);self.status.setText('正在创建桌面快捷方式…')
+        def work():
+            try:self.jobs.finished.emit('桌面快捷方式已创建：'+str(create_desktop_shortcut(ROOT)))
+            except Exception as error:self.jobs.failed.emit('创建失败：'+str(error))
+        threading.Thread(target=work,daemon=True).start()
     def save_now(self): self.status.setText('全部配置已保存' if self.pet.save_settings() else '保存失败')
     def snapshot(self):
         path,_=QFileDialog.getSaveFileName(self,'保存配置快照',str(ROOT/'exports'/('settings-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'.json')),'JSON (*.json)')

@@ -78,3 +78,41 @@ test('ordinary forked conversations are observed, old turn endings are ignored',
   s.accept(fork,{type:'turn/end',data:{turn:2,reason:{kind:'completed'}}});
   assert.equal(s.events.length,1);
 });
+test('session catalog adds idle conversations, newest activity first', () => {
+  let now=100; const s=new PetState(() => now);
+  s.accept({id:'live',header:{}},{type:'turn/start',data:{turn:1}});
+  now=110; s.accept({id:'live',header:{}},{type:'tool/call',data:{callId:'r',name:'read_file'}});
+  const catalog=[{id:'live',title:'活动会话',running:true,updatedAt:105000},
+    {id:'idle1',title:'旧会话',running:false,updatedAt:90000},
+    {id:'idle2',title:'较新的空闲',running:false,updatedAt:95000}];
+  const snap=s.snapshot(catalog);
+  const byId=Object.fromEntries(snap.sessions.map(row=>[row.thread_id,row]));
+  assert.equal(byId.live.state,'reading');
+  assert.equal(byId.live.live,true);
+  assert.equal(byId.idle1.state,'idle'); assert.equal(byId.idle1.live,false);
+  assert.equal(byId.idle1.title,'旧会话');
+  assert.deepEqual(snap.sessions.map(row=>row.thread_id),['live','idle2','idle1']);
+});
+test('a catalog row already running is projected as working and active', () => {
+  const s=new PetState(() => 10);
+  const snap=s.snapshot([{id:'x',title:'跑着的会话',running:true,updatedAt:120000}]);
+  assert.equal(snap.sessions[0].state,'working');
+  assert.equal(snap.sessions[0].active,true);
+  assert.equal(snap.sessions[0].thread_id,'x');
+});
+test('a live turn keeps the catalog title instead of overwriting it', () => {
+  let now=10; const s=new PetState(() => now);
+  const catalog=[{id:'live',title:'真实标题',running:false,updatedAt:95000}];
+  assert.equal(s.snapshot(catalog).sessions[0].title,'真实标题');
+  s.accept({id:'live',header:{}},{type:'turn/start',data:{turn:1}});
+  const row=s.snapshot(catalog).sessions[0];
+  assert.equal(row.title,'真实标题');
+  assert.equal(row.live,true);
+  assert.equal(row.active,true);
+});
+test('catalog rows never carry prompts, paths or credentials', () => {
+  const s=new PetState(() => 10);
+  const snap=s.snapshot([{id:'x',title:'标题',running:false,updatedAt:1,cwd:'D:\\secret\\project',prompt:'SECRET'}]);
+  const text=JSON.stringify(snap);
+  assert.ok(!text.includes('SECRET')); assert.ok(!text.includes('secret'));
+});

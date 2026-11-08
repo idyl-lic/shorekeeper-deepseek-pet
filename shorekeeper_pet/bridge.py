@@ -1,5 +1,6 @@
 """Read Harness pet plugin metadata, never credentials or chat logs."""
 from __future__ import annotations
+import threading
 import json, os, pathlib, time
 from decimal import Decimal, InvalidOperation
 from .paths import ROOT, DSH_HOME
@@ -51,15 +52,31 @@ def balance_label(data,compact=False):
 
 class RateClient:
     def __init__(self,executable='',deepseek_home=''):
-        self.executable=executable; self.deepseek_home=deepseek_home
-    def read(self):
+        self.executable=executable; self.deepseek_home=deepseek_home; self.closed=threading.Event()
+    def read(self,timeout=25):
         home=pathlib.Path(self.deepseek_home or DSH_HOME)
+        unavailable=dict(error='请打开 DeepSeek Harness 并安装桌宠连接插件',source='unavailable')
         try:
+            before=read_snapshot(home); requested=time.time()
             request=home/'shorekeeper-pet/refresh'; request.parent.mkdir(parents=True,exist_ok=True); request.touch()
-            return balance_data(read_snapshot(home))
-        except (OSError,ValueError,TypeError):
-            return dict(windows=[],wallets=[],error='请打开 DeepSeek Harness 并安装桌宠连接插件',source='unavailable')
-    def close(self): pass
+            data=balance_data(before)
+            if not is_connected(before) or data.get('status')=='signed-out':return data
+            deadline=time.monotonic()+timeout
+            # Heartbeats update the snapshot timestamp, not balance.updated_at.
+            # Wait for the plugin's balance response rather than its old cache.
+            while not self.closed.is_set():
+                try:
+                    value=read_snapshot(home); data=balance_data(value)
+                    if not is_connected(value) or data.get('status')=='signed-out':return data
+                    if data.get('updated_at',0)>before.get('balance',{}).get('updated_at',0) and data['updated_at']>=requested-.001:return data
+                    if data.get('status')=='unavailable' and before.get('balance',{}).get('status')!='unavailable':return data
+                except (OSError,ValueError,TypeError):pass
+                remaining=deadline-time.monotonic()
+                if remaining<=0:break
+                self.closed.wait(min(.1,remaining))
+            return dict(error='余额刷新未完成，显示最近记录。',source='cache')
+        except (OSError,ValueError,TypeError):return unavailable
+    def close(self):self.closed.set()
 
 class Monitor:
     def __init__(self,home=DSH_HOME):
@@ -83,7 +100,11 @@ class Monitor:
             if seq>self.sequence and event.get('ended',0)>=self.observe_since: events.append(event.copy())
             self.sequence=max(self.sequence,seq)
         rows=value.get('sessions',[])
-        self.threads=[dict(id=r['thread_id'],title=r['title']) for r in rows]
+        self.threads=[dict(id=r['thread_id'],title=r.get('title') or 'DeepSeek 会话',state=r.get('state') or 'idle',
+            active=bool(r.get('active')),live=bool(r.get('live')),
+            last_event=r.get('last_event') or 0,updated=r.get('updated') or 0,
+            started=r.get('started') or 0,ended=r.get('ended') or 0) for r in rows if r.get('thread_id')]
+        self.threads.sort(key=lambda r:max(r['last_event'],r['updated']),reverse=True)
         choices=[r for r in rows if self.selected=='auto' or r['thread_id']==self.selected]
         if not choices: return dict(base,events=events)
         row=max(choices,key=lambda r:(bool(r.get('active')),r.get('last_event',0)))

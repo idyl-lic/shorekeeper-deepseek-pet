@@ -18,6 +18,10 @@ def wrap_text(text,metrics,width):
     lines.append(line)
     return lines
 
+# Ring colour of the status badge, one per session state.
+STATUS_COLORS={'thinking':'#7b9cd9','reading':'#5aa9c9','writing':'#e0a04c','working':'#4c9be0',
+ 'waiting':'#e06c6c','done':'#58b880','error':'#d9534f','paused':'#98a6b8','idle':'#aab6c6','unknown':'#aab6c6'}
+
 class PetRenderer:
     def image_rect(self,image):
         r=self.pet_rect; ratio=min(r.width()/image.width(),r.height()/image.height())
@@ -35,15 +39,17 @@ class PetRenderer:
         metrics=QFontMetrics(self.quota_font)
         bar_height=max(39,metrics.height()+18)*self.quota_pet_factor
         bar_width=min(230,max(146,metrics.horizontalAdvance(self.quota_label(compact=True))+28))*self.quota_pet_factor
-        self.scale_factor=fitted_scale(self.requested_scale,size+8,size+bar_height+14,area.width(),area.height())
+        fit_height=size+bar_height+14 if opts['show_quota'] else size+8
+        self.scale_factor=fitted_scale(self.requested_scale,size+8,fit_height,area.width(),area.height())
         self.quota_base_width=bar_width; self.quota_base_height=bar_height
         self.quota_display_scale=min(opts['quota_scale'],(area.width()/self.scale_factor-8)/bar_width,(area.height()/self.scale_factor-size-14)/bar_height)
         self.quota_display_scale=max(.1,self.quota_display_scale)
         bar_width*=self.quota_display_scale; bar_height*=self.quota_display_scale
-        width=max(size,bar_width)+8; self.scene_width=width
+        width=max(size,bar_width if opts['show_quota'] else 0)+8; self.scene_width=width
         self.pet_rect=QRectF((width-size)/2,4,size,size)
-        self.quota_rect=QRectF((width-bar_width)/2,size+8,bar_width,bar_height)
-        height=self.quota_rect.bottom()+6; self.scene_height=height
+        self.quota_rect=QRectF((width-bar_width)/2,size+8,bar_width,bar_height) if opts['show_quota'] else QRectF()
+        height=self.quota_rect.bottom()+6 if opts['show_quota'] else self.pet_rect.bottom()+4
+        self.scene_height=height
         target_width=min(size*opts['bubble_width_ratio']*self.scale_factor,area.width())
         center=self.pet_rect.center().x()*self.scale_factor
         self.bubble_left=math.ceil(center-target_width/2)
@@ -72,11 +78,39 @@ class PetRenderer:
             self.resize(neww,newh)
             if anchor:
                 self.move(round(anchor[0]-self.pet_rect.center().x()*self.scale_factor),round(anchor[1]-self.pet_rect.bottom()*self.scale_factor)); self.clamp_position()
+        self.lock_button.position_on_pet()
+        self.pointer_mode.refresh()
         self.setToolTip(self.quota_details()); self.update_bubble(); self.size_changed.emit()
+
+    def status_button_rect(self):
+        """Scene-space circle in the pet's top-right corner: click for session list."""
+        size=self.options['pet_size']; diameter=size*.21; margin=size*.016
+        return QRectF(self.pet_rect.right()-diameter-margin,self.pet_rect.top()+margin,diameter,diameter)
+
+    def status_hit_rect(self):
+        r=self.status_button_rect(); s=self.scale_factor
+        return QRectF(r.x()*s,r.y()*s,r.width()*s,r.height()*s)
+
+    def paint_status_button(self,p):
+        rows=getattr(self,'thread_list',None) or []
+        active=sum(1 for row in rows if row.get('active'))
+        color=QColor(STATUS_COLORS.get(self.state,'#aab6c6'))
+        btn=self.status_button_rect()
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(20,43,77,45)); p.drawEllipse(btn.translated(0,2))
+        p.setBrush(QColor(255,255,255,242)); p.setPen(QPen(color,1.8)); p.drawEllipse(btn)
+        p.setFont(font(self.options['font_family'],max(9,round(btn.width()*.42)),True))
+        p.setPen(QColor('#20406b'))
+        p.drawText(btn,Qt.AlignmentFlag.AlignCenter,str(len(rows)))
+        if active:
+            dot=btn.width()*.30
+            p.setPen(QPen(QColor(255,255,255),1.6)); p.setBrush(color)
+            p.drawEllipse(QRectF(btn.right()-dot*.85,btn.top()-dot*.15,dot,dot))
 
     def update_bubble(self):
         if not hasattr(self,'bubble_rect'): return
         bubble=self.bubble_window
+        updates=getattr(self,'updates',None)
+        if updates and updates.notice.refresh(): bubble.hide(); return
         if not self.isVisible() or not self.bubble_visible(): bubble.hide(); return
         center=self.mapToGlobal((self.pet_rect.center()*self.scale_factor).toPoint())
         area=self.screen_area()
@@ -94,18 +128,25 @@ class PetRenderer:
         if self.voice_bubble(): return True
         if b['bubble_mode']=='audio': return False
         if b['bubble_seconds'] and elapsed>=b['bubble_seconds']: return False
-        return not self.quiet or self.controller.owner=='preview' or self.state in MANUAL|{'done','error','waiting'} or b['bubble_mode']=='custom'
+        return True
 
     def paintEvent(self,event):
         p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing); p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform); p.scale(self.scale_factor,self.scale_factor)
         opts=self.options; width=self.scene_width; b=self.binding(self.state)
         elapsed=(time.monotonic()-self.controller.started)*1000
         frame=self.animation.frame(elapsed*b['speed'],playback='once' if self.preview_id else b['playback'])
+        opacity=self.pointer_mode.avatar_opacity
+        p.setOpacity(opacity)
         fraction=(time.monotonic()-self.transition_start)/.20
         if self.transition_old is not None and fraction<1:
-            p.setOpacity(1-fraction*2 if fraction<.5 else (fraction-.5)*2); shown=self.transition_old if fraction<.5 else frame; p.drawImage(self.image_rect(shown),shown)
+            p.setOpacity(opacity*(1-fraction*2 if fraction<.5 else (fraction-.5)*2)); shown=self.transition_old if fraction<.5 else frame; p.drawImage(self.image_rect(shown),shown)
         else: self.transition_old=None; p.drawImage(self.image_rect(frame),frame)
-        p.setOpacity(1); self.last_image=frame
+        # 状态圆钮始终按 100% 不透明度绘制（不受锁定/悬停淡出影响），
+        # 其余部分沿用上游：恢复锁定透明度，并在关闭余额条时提前结束。
+        p.setOpacity(1); self.paint_status_button(p)
+        p.setOpacity(opacity); self.last_image=frame
+        if not opts['show_quota']:
+            p.end(); return
         p.save(); p.translate(self.quota_rect.topLeft()); quota_scale=self.quota_display_scale*self.quota_pet_factor; p.scale(quota_scale,quota_scale)
         bar=QRectF(0,0,self.quota_base_width/self.quota_pet_factor,self.quota_base_height/self.quota_pet_factor)
         windows=self.quota_data.get('windows') or []; remaining=min((w['remaining'] for w in windows),default=0)
@@ -119,6 +160,6 @@ class PetRenderer:
             remaining=100
             p.setBrush(QColor(fill)); p.drawRoundedRect(QRectF(track.left(),track.top(),track.width()*max(0,min(100,remaining))/100,track.height()),2,2)
         p.setFont(self.quota_font); p.setPen(QColor('#744d13' if low else '#204e7d'))
-        label=QFontMetrics(self.quota_font).elidedText(self.quota_label(compact=True),Qt.TextElideMode.ElideRight,round(bar.width()-18))
+        label=QFontMetrics(self.quota_font).elidedText(self.quota_display_label(),Qt.TextElideMode.ElideRight,round(bar.width()-18))
         p.drawText(QRectF(bar.left()+9,bar.top()+3,bar.width()-18,bar.height()-14),Qt.AlignmentFlag.AlignCenter,label)
         paint_grips(p,bar,self.scale_factor*quota_scale); p.restore(); p.end()

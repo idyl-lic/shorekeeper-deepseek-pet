@@ -102,8 +102,10 @@ class UpdateWidgetTests(unittest.TestCase):
         self.assertTrue(predicate())
     def result(self):return updates.UpdateResult('available','9.9.9',updates.releases_url(),'说明')
     def test_startup_checks_once_in_worker_and_does_not_touch_settings(self):
+        # 本 fork 默认关闭启动检查，这里显式打开以验证"只查一次"的原有契约。
+        self.pet.options['check_updates_on_start']=True
         main=threading.get_ident();calls=[];before=copy.deepcopy(self.pet.settings)
-        def check():calls.append(threading.get_ident());return updates.UpdateResult('current')
+        def check(**kwargs):calls.append(threading.get_ident());return updates.UpdateResult('current')
         with patch.object(update_ui,'check_latest',side_effect=check):
             self.controller.check_startup();self.wait_for(lambda:not self.controller.busy)
             self.controller.check_startup()
@@ -125,19 +127,39 @@ class UpdateWidgetTests(unittest.TestCase):
         self.controller.manual_requested=True;self.controller._finished(self.result())
         self.assertTrue(self.controller.dialog.isVisible())
         self.controller.dialog.close();self.controller._finished(updates.UpdateResult('available','10.0.0'))
-        self.assertEqual(self.controller.dialog.result.version,'10.0.0')
+        self.assertEqual(self.controller.latest.version,'10.0.0');self.assertTrue(self.controller.notice.isVisible())
     def test_ignore_is_saved_but_dismiss_does_not_change_settings(self):
-        self.controller._finished(self.result());before=copy.deepcopy(self.pet.settings)
+        self.controller.manual_requested=True;self.controller._finished(self.result());before=copy.deepcopy(self.pet.settings)
         self.controller.dialog.reject();self.assertEqual(self.pet.settings,before)
-        self.controller._finished(self.result());self.controller.dialog.ignore_button.click()
+        self.controller.manual_requested=True;self.controller._finished(self.result());self.controller.dialog.ignore_button.click()
         data=json.loads((self.root/'settings.json').read_text('utf8'))
         self.assertEqual(data['appearance']['ignored_update_version'],'9.9.9')
         self.assertEqual(data['bindings'],before['bindings'])
     def test_shutdown_ignores_late_results(self):
         self.controller.close();self.controller._finished(self.result());self.assertIsNone(self.controller.dialog)
+    def test_changing_source_discards_the_inflight_result(self):
+        self.controller.busy=True;self.controller.manual_requested=True;self.pet.options['update_source']='mirror'
+        self.controller._received(('auto',self.result()))
+        self.assertIsNone(self.controller.dialog);self.assertFalse(self.controller.busy)
+        self.assertIn('来源已更换',self.controller.status)
+    def test_update_window_has_one_install_action_and_no_download_buttons(self):
+        from dataclasses import replace
+        from PySide6.QtWidgets import QPushButton
+        asset=updates.ReleaseAsset('test.zip','下载完整包','https://github.com/'+UPDATE_REPOSITORY+'/releases/download/v9.9.9/test.zip')
+        self.controller.manual_requested=True;self.controller._finished(replace(self.result(),assets=(asset,)))
+        labels=[b.text() for b in self.controller.dialog.findChildren(QPushButton)]
+        self.assertEqual(labels.count('一键更新'),1);self.assertFalse([t for t in labels if t.startswith('下载')])
+    def test_release_page_formatting_is_removed_from_displayed_notes(self):
+        text='## 标题\n\n**修复：** 使用 `签名`。\n- 一项\n\n[使用说明](https://github.com/a/b) · <script>'
+        self.assertEqual(updates.readable_notes(text),'标题\n\n修复： 使用 签名。\n- 一项\n\n使用说明 · <script>')
+        self.controller.manual_requested=True
+        from dataclasses import replace
+        self.controller._finished(replace(self.result(),notes='**重要**'))
+        self.assertEqual(self.controller.dialog.notes.toPlainText(),'重要')
+
     def test_manual_check_joins_inflight_request_and_plain_text_notes(self):
         ready=threading.Event();done=threading.Event()
-        def check():ready.set();done.wait(1);return updates.UpdateResult('available','9.9.9',notes='<script>alert(1)</script>')
+        def check(**kwargs):ready.set();done.wait(1);return updates.UpdateResult('available','9.9.9',notes='<script>alert(1)</script>')
         with patch.object(update_ui,'check_latest',side_effect=check) as request:
             self.controller.check(False);self.assertTrue(ready.wait(1));self.controller.check(True)
             done.set();self.wait_for(lambda:not self.controller.busy)

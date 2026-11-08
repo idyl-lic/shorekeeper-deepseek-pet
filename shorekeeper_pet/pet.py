@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse, collections, json, math, os, pathlib, random, sys, threading, time
 from datetime import datetime
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, QRectF, QPoint, QSize, Signal, QObject, QLockFile
+from PySide6.QtCore import Qt, QTimer, QRectF, QPoint, QSize, Signal, QObject, QLockFile, QEvent
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QFont, QImage, QPixmap, QIcon, QAction, QCursor
-from PySide6.QtWidgets import QApplication, QWidget, QMenu, QSystemTrayIcon, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QCheckBox, QGroupBox, QListWidget, QAbstractItemView,QScrollArea
+from PySide6.QtWidgets import QApplication, QWidget, QMenu, QSystemTrayIcon, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QCheckBox, QGroupBox, QListWidget, QListWidgetItem, QAbstractItemView,QScrollArea
 from .bridge import Monitor, RateClient, ROOT
 from .bindings import BindingMap,PlaybackController,MANUAL,playback_seconds
 from .studio import BindingEditor
@@ -13,15 +13,17 @@ from .preferences import Preferences
 from .appearance import appearance,load_fonts,stylesheet,font
 from .audio_player import VoicePlayer
 from .config_io import save_atomic,migrate_settings
-from .renderer import PetRenderer,SpeechBubble
+from .renderer import PetRenderer,SpeechBubble,STATUS_COLORS
 from .binding_editor import TRIGGERS
 from .paths import VERSION,DSH_HOME
 from .voice_pool import task_key,clip_bubble_text
-from .sizing import SizeDialog,normalize_scale
+from .sizing import normalize_scale
 from .presentation_size import EdgeResize
 from .media_library import load_catalog
 from .presets import load_defaults,default_bindings
 from .update_ui import UpdateController
+from .lock_button import LockButton
+from .pointer_mode import PointerMode
 
 SETTINGS=ROOT/'settings.json'
 STATES={
@@ -42,6 +44,9 @@ STATES={
  'drop':('落座啦','就坐在这里陪你吧。'),
  'doubleclick':('双击回应','我在呢，听到你的呼唤了。'),
 }
+# Short labels for the session list: compact enough for one line per conversation.
+LIST_LABELS={'thinking':'思考中','reading':'查阅中','writing':'编辑中','working':'执行中',
+ 'waiting':'等你回应','done':'已完成','error':'出错了','paused':'已暂停','idle':'空闲','unknown':'未知'}
 PACKS={
  '163':dict(idle='p3-06',thinking='p3-10',reading='p3-02',writing='p3-02',working='p3-11',waiting='p3-20',done='p3-25',error='p3-03',paused='p3-19',unknown='p3-20',pet='p3-17',feed='p3-09'),
  'GB0227':dict(idle='p1-03',thinking='p1-07',reading='p2-07',writing='p2-06',working='p2-19',waiting='p2-16',done='p1-20',error='p2-03',paused='p1-05',unknown='p2-16',pet='p2-10',feed='p1-16'),
@@ -87,61 +92,189 @@ class Animation:
         return self.frames[seq[-1]]
 
 class BridgeWorker(QObject):
+    client_exited=Signal()
     status=Signal(dict)
     quota=Signal(dict)
+    quota_read=Signal(int,dict)
     threads=Signal(list)
 
-class Panel(QDialog):
-    def __init__(self, pet):
-        super().__init__(None)
-        self.pet=pet
-        self.setWindowTitle('守岸人 · 陪伴面板')
-        self.setMinimumSize(550,560); self.resize(600,800)
-        self.setWindowIcon(pet.icon)
-        self.setStyleSheet('''QDialog{background:#f5f7fc;color:#223450;} QLabel{color:#354863;font:14px "Microsoft YaHei";} QGroupBox{font:600 14px "Microsoft YaHei";border:1px solid #d9e2ef;border-radius:12px;margin-top:15px;padding:16px 12px 10px;} QGroupBox::title{subcontrol-origin:margin;left:16px;} QPushButton,QComboBox{background:white;border:1px solid #cdd8ea;border-radius:8px;padding:8px 12px;color:#304762;font:13px "Microsoft YaHei";} QPushButton:hover{background:#e5efff;} QListWidget{border:1px solid #dae3ef;border-radius:8px;background:white;font:13px "Microsoft YaHei";padding:6px;} QCheckBox{font:13px "Microsoft YaHei";spacing:8px;}''')
-        self.setStyleSheet(self.styleSheet()+'''QGroupBox,QCheckBox{color:#466184;} QComboBox QAbstractItemView{background:white;color:#304762;selection-background-color:#dbeaff;selection-color:#223450;}''')
-        outer=QVBoxLayout(self); scroll=QScrollArea(); scroll.setWidgetResizable(True); body=QWidget(); body.setObjectName('settingsBody'); scroll.setWidget(body); outer.addWidget(scroll)
-        layout=QVBoxLayout(body); layout.setSpacing(10); layout.setContentsMargins(22,18,22,20)
-        title=QLabel('守岸人  /  SHOREKEEPER'); title.setStyleSheet('font-size:21px;font-weight:600;color:#283f64;'); layout.addWidget(title)
-        self.summary=QLabel(); self.summary.setWordWrap(True); layout.addWidget(self.summary)
-        row=QHBoxLayout(); row.addWidget(QLabel('关注的会话'))
-        self.sessions=QComboBox(); self.sessions.setMinimumWidth(290); self.sessions.addItem('自动跟随最近活动','auto'); self.sessions.currentIndexChanged.connect(self.select_session); row.addWidget(self.sessions,1); layout.addLayout(row)
-        appearance=QHBoxLayout(); appearance.addWidget(QLabel('表情风格'))
-        self.pack=QComboBox(); self.pack.addItem('163 · 小小守岸人','163'); self.pack.addItem('GB0227 · 近景表情','GB0227'); self.pack.setCurrentIndex(0 if pet.pack=='163' else 1); self.pack.currentIndexChanged.connect(lambda:pet.set_pack(self.pack.currentData())); appearance.addWidget(self.pack)
-        size_button=QPushButton('调整大小…'); size_button.clicked.connect(pet.open_size); appearance.addWidget(size_button); layout.addLayout(appearance)
-        options=QHBoxLayout(); self.quiet=QCheckBox('安静陪伴'); self.quiet.setChecked(pet.quiet); self.quiet.toggled.connect(pet.set_quiet); options.addWidget(self.quiet)
-        self.top=QCheckBox('保持置顶'); self.top.setChecked(pet.on_top); self.top.toggled.connect(pet.set_top); options.addWidget(self.top); options.addStretch(); layout.addLayout(options)
-        self.notes=QCheckBox('在气泡里显示当前状态提示'); self.notes.setChecked(pet.show_notes); self.notes.toggled.connect(pet.set_notes); layout.addWidget(self.notes)
-        bindings_button=QPushButton('自定义 GIF 绑定 · 为每种交互选择表情'); bindings_button.setStyleSheet('background:#e5eeff;color:#2c5287;font-weight:600;padding:11px;'); bindings_button.clicked.connect(pet.open_bindings); layout.addWidget(bindings_button)
-        preferences=QPushButton('外观、声音与迁移 · 字体 / 音频 / 导出'); preferences.clicked.connect(pet.open_preferences); layout.addWidget(preferences)
-        library=QGroupBox('表情收藏 · 83 个原始 GIF'); lib=QVBoxLayout(library)
-        self.gallery=QComboBox()
-        for asset in CATALOG: self.gallery.addItem(f"{asset['id']}   {asset['name'].removesuffix('.gif')}",asset['id'])
-        lib.addWidget(self.gallery); buttons=QHBoxLayout()
-        preview=QPushButton('播放这个表情'); preview.clicked.connect(lambda:pet.preview(self.gallery.currentData())); buttons.addWidget(preview)
-        reset=QPushButton('回到任务状态'); reset.clicked.connect(pet.clear_override); buttons.addWidget(reset); lib.addLayout(buttons); layout.addWidget(library)
-        bottom=QHBoxLayout(); go=QPushButton('打开 DeepSeek Harness'); go.clicked.connect(pet.open_deepseek); bottom.addWidget(go)
-        hide=QPushButton('收起面板'); hide.clicked.connect(self.hide); bottom.addWidget(hide); layout.addLayout(bottom)
-        footer=QLabel('单击摸头 · 拖动移动 · 右键菜单\n额度每 2 分钟更新；任务状态来自本地会话。'); footer.setStyleSheet('color:#7b8ba2;'); layout.addWidget(footer)
-        self.update_threads(pet.thread_list); self.refresh()
-        self.apply_style()
+def relative_time(stamp):
+    """Human friendly age of a session's last activity."""
+    try: value=float(stamp or 0)
+    except (TypeError,ValueError): return ''
+    if value<=0: return ''
+    delta=max(0.0,time.time()-value)
+    if delta<45: return '刚刚'
+    if delta<3600: return f'{int(delta//60)} 分钟前'
+    if delta<86400: return f'{int(delta//3600)} 小时前'
+    moment=datetime.fromtimestamp(value)
+    return moment.strftime('昨天 %H:%M') if (datetime.now()-moment).days<2 else moment.strftime('%m-%d %H:%M')
 
-    def apply_style(self): self.setStyleSheet(stylesheet(self.pet.options))
+class SessionRow(QWidget):
+    """One conversation. Single click follows it; double click opens Harness on it."""
+    def __init__(self,parent,row,followed,on_follow,on_open):
+        super().__init__(parent)
+        self.row=row; self.on_follow=on_follow; self.on_open=on_open; self.followed=followed
+        self.setCursor(Qt.CursorShape.PointingHandCursor); self.setFixedWidth(316)
+        # 单击与双击必须分开：单击延后到双击间隔结束再执行，双击则取消它。
+        self.pending=QTimer(self); self.pending.setSingleShot(True)
+        self.pending.setInterval(QApplication.doubleClickInterval())
+        self.pending.timeout.connect(self.fire_follow)
+        layout=QHBoxLayout(self); layout.setContentsMargins(12,7,8,7); layout.setSpacing(8)
+        dot=QLabel('●'); dot.setStyleSheet('color:'+STATUS_COLORS.get(row.get('state'),'#aab6c6')+';font-size:15px;background:transparent;')
+        dot.setFixedWidth(14); layout.addWidget(dot)
+        text=QVBoxLayout(); text.setSpacing(1)
+        full=(row.get('title') or 'DeepSeek 会话').strip()
+        title=QLabel(); title.setStyleSheet('font:600 13px "Microsoft YaHei";color:#223450;background:transparent;')
+        title.setText(title.fontMetrics().elidedText(full,Qt.TextElideMode.ElideRight,188))
+        if title.text()!=full: title.setToolTip(full)
+        title.setFixedWidth(188)
+        detail=('关注中 · ' if followed else '')+LIST_LABELS.get(row.get('state'),'未知')+(' · 进行中' if row.get('active') else '')
+        meta=QLabel(detail); meta.setStyleSheet('font:12px "Microsoft YaHei";color:#7b8ba2;background:transparent;')
+        meta.setFixedWidth(188)
+        text.addWidget(title); text.addWidget(meta); layout.addLayout(text)
+        when=QLabel(relative_time(row.get('last_event') or row.get('updated')))
+        when.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+        when.setStyleSheet('font:12px "Microsoft YaHei";color:#9aa8bb;background:transparent;')
+        when.setFixedWidth(64); layout.addWidget(when)
+    def paintEvent(self,event):
+        """关注中的行手动绘制底纹：普通 QWidget 的样式表背景不会生效。"""
+        if not self.followed:
+            return super().paintEvent(event)
+        painter=QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        card=QRectF(self.rect()).adjusted(1,1,-1,-1)
+        painter.setBrush(QColor('#e8f2fd'))
+        painter.drawRoundedRect(card,9,9)
+        painter.setBrush(QColor('#4c9be0'))
+        painter.drawRoundedRect(QRectF(card.left()+2,card.top()+9,3,card.height()-18),1.5,1.5)
+        painter.end()
+    def fire_follow(self):
+        try: self.on_follow()
+        except Exception: pass
+    def fire_open(self):
+        try: self.on_open()
+        except Exception: pass
+    def mousePressEvent(self,event):
+        button=event.button()
+        if button==Qt.MouseButton.LeftButton:
+            event.accept()
+            if not self.pending.isActive(): self.pending.start()
+            return
+        if button==Qt.MouseButton.RightButton:
+            event.accept(); self.open_menu(event.globalPosition().toPoint()); return
+        super().mousePressEvent(event)
+    def mouseDoubleClickEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:
+            self.pending.stop(); event.accept(); self.fire_open(); return
+        super().mouseDoubleClickEvent(event)
+    def open_menu(self,position):
+        menu=QMenu(self)
+        menu.addAction('关注这个会话',self.fire_follow)
+        menu.addAction('打开并跳转到 DeepSeek Harness',self.fire_open)
+        menu.addSeparator()
+        title=(self.row.get('title') or '').strip()
+        copy=menu.addAction('复制会话标题')
+        copy.setEnabled(bool(title)); copy.triggered.connect(lambda: QApplication.clipboard().setText(title))
+        # 弹出菜单会让弹窗失焦，期间必须暂停"失焦自动收起"，否则菜单一闪就没。
+        top=self.window(); suspend=getattr(top,'suspend_autohide',None)
+        if suspend: suspend(True)
+        try:
+            menu.exec(position)
+        finally:
+            if suspend:
+                suspend(False)
+                if top.isVisible(): top.raise_(); top.activateWindow()
 
-    def select_session(self):
-        self.pet.select_thread(self.sessions.currentData() or 'auto')
+class SessionListPopup(QDialog):
+    """Every conversation known to Harness, newest activity first."""
+    def __init__(self,pet):
+        super().__init__(None,Qt.WindowType.Tool|Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint)
+        self.pet=pet; self.signature=None; self._autohide_suspended=False
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowTitle('会话状态')
+        shell=QVBoxLayout(self); shell.setContentsMargins(0,0,0,0)
+        self.card=QWidget(); self.card.setObjectName('card')
+        self.card.setStyleSheet('#card{background:#f7f9fd;border:1px solid #dbe3ef;border-radius:14px;}')
+        shell.addWidget(self.card)
+        layout=QVBoxLayout(self.card); layout.setContentsMargins(14,12,14,12); layout.setSpacing(8)
+        head=QHBoxLayout(); self.heading=QLabel('会话状态')
+        self.heading.setStyleSheet('font:600 15px "Microsoft YaHei";color:#223450;background:transparent;')
+        head.addWidget(self.heading); head.addStretch()
+        self.follow=QPushButton('自动跟随')
+        self.follow.setStyleSheet('background:white;border:1px solid #cdd8ea;border-radius:8px;padding:5px 10px;color:#304762;font:12px "Microsoft YaHei";')
+        self.follow.clicked.connect(self.pick_auto); head.addWidget(self.follow); layout.addLayout(head)
+        self.list=QListWidget(); self.list.setFrameShape(QListWidget.Shape.NoFrame)
+        self.list.setStyleSheet('QListWidget{background:transparent;border:none;} QListWidget::item{border-radius:9px;} QListWidget::item:selected{background:#e5eeff;}')
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setMinimumWidth(316)
+        layout.addWidget(self.list)
+        self.footer=QLabel('单击关注 · 双击打开 Harness · 右键更多')
+        self.footer.setStyleSheet('font:11px "Microsoft YaHei";color:#9aa8bb;background:transparent;')
+        layout.addWidget(self.footer)
+        self.timer=QTimer(self); self.timer.setInterval(1000); self.timer.timeout.connect(self.refresh); self.timer.start()
+        self.setMinimumWidth(344); self.resize(344,180)
 
-    def update_threads(self, threads):
-        self.sessions.blockSignals(True)
-        selected=self.pet.monitor.selected
-        self.sessions.clear(); self.sessions.addItem('自动跟随最近活动','auto')
-        for row in threads: self.sessions.addItem(row['title'][:35],row['id'])
-        idx=self.sessions.findData(selected)
-        self.sessions.setCurrentIndex(max(0,idx)); self.sessions.blockSignals(False)
+    def pick_auto(self):
+        self.pet.select_thread('auto'); self.refresh()
+
+    def follow_thread(self,thread_id):
+        """Single click: only change which conversation the pet follows."""
+        if thread_id: self.pet.follow_thread(thread_id)
+        self.refresh()
+
+    def open_thread(self,thread_id):
+        """Double click: follow it and bring the Harness window forward."""
+        if thread_id: self.pet.open_thread(thread_id)
+        self.hide()
 
     def refresh(self):
-        status=self.pet.live_status; state=status.get('state','idle')
-        self.summary.setText(f"{STATES.get(state,STATES['idle'])[0]}  ·  {status.get('title') or '等待下一次相遇'}")
+        rows=sorted(list(self.pet.thread_list or []),
+                    key=lambda r:max(r.get('last_event') or 0,r.get('updated') or 0),reverse=True)
+        followed=self.pet.monitor.selected
+        self.heading.setText(f'会话状态 · {len(rows)}')
+        self.follow.setText('正在自动跟随' if followed=='auto' else '自动跟随')
+        signature=[(r.get('id'),r.get('title'),r.get('state'),bool(r.get('active')),int(max(r.get('last_event') or 0,r.get('updated') or 0))) for r in rows]
+        if signature==self.signature: return
+        self.signature=signature
+        self.list.clear()
+        if not rows:
+            item=QListWidgetItem('还没有会话。打开 DeepSeek Harness 开始一个对话吧。',self.list)
+            item.setFlags(Qt.ItemFlag.NoItemFlags); self.list.setFixedHeight(64)
+        else:
+            for row in rows:
+                item=QListWidgetItem(self.list)
+                widget=SessionRow(self.list,row,followed==row.get('id'),
+                    lambda rid=row.get('id'):self.follow_thread(rid),
+                    lambda rid=row.get('id'):self.open_thread(rid))
+                item.setSizeHint(QSize(316,52)); self.list.setItemWidget(item,widget)
+            self.list.setFixedHeight(min(420,max(56,len(rows)*54)))
+        self.adjustSize()
+
+    def show_near(self):
+        self.signature=None; self.refresh()
+        area=self.pet.screen_area(); geo=self.pet.frameGeometry()
+        self.adjustSize(); width,height=self.width(),self.height()
+        x=geo.left()-width-10
+        if x<area.left(): x=geo.right()+10
+        x=max(area.left(),min(x,area.right()-width+1))
+        y=max(area.top(),min(geo.top(),area.bottom()-height+1))
+        self.move(x,y); self.show(); self.raise_(); self.activateWindow()
+
+    def event(self,event):
+        if event.type()==QEvent.Type.WindowDeactivate and self.isVisible(): QTimer.singleShot(120,self.hide_if_unfocused)
+        return super().event(event)
+
+    def suspend_autohide(self,flag):
+        """右键菜单打开期间不因失焦自动收起。"""
+        self._autohide_suspended=bool(flag)
+
+    def hide_if_unfocused(self):
+        if self._autohide_suspended: return
+        if not self.isActiveWindow(): self.hide()
 
 class Pet(PetRenderer,QWidget):
     size_changed=Signal()
@@ -155,7 +288,6 @@ class Pet(PetRenderer,QWidget):
         self.pack=self.settings.get('pack','163')
         if self.pack not in PACKS: self.pack='163'
         self.bindings=BindingMap(PACKS,ASSETS,ONESHOT,self.settings.get('bindings'),baseline=default_bindings(ROOT))
-        self.quiet=self.settings.get('quiet',False)
         self.on_top=self.settings.get('on_top',True)
         self.show_notes=self.settings.get('show_notes',True)
         flags=Qt.WindowType.FramelessWindowHint|Qt.WindowType.Tool
@@ -173,9 +305,15 @@ class Pet(PetRenderer,QWidget):
         self.bubble_until=time.monotonic()+12
         self.live_status={'state':'idle','message':'','title':''}
         self.notifications=collections.deque(); self.notification=None; self.notification_until=0; self.notification_seen=set()
-        self.quota_data={}; self.thread_list=[]; self.panel=None; self.binding_editor=None
+        self.quota_data={}; self.thread_list=[]; self.panel=None; self.binding_editor=None; self.session_popup=None; self.live_signature=None
         self.monitor=Monitor(self.options['deepseek_home'] or DSH_HOME); self.monitor.selected=self.settings.get('thread','auto')
         self.rate_client=RateClient(self.options['deepseek_executable'],self.options['deepseek_home']); self.worker=BridgeWorker(); self.stop_event=threading.Event(); self.refresh_event=threading.Event()
+        from .quota_refresh import QuotaRefresh
+        self.quota_refresh=QuotaRefresh(self.refresh_event)
+        self.worker.quota_read.connect(self.on_quota_read)
+        from .client_lifetime import ClientLifetime
+        self.client_lifetime=ClientLifetime()
+        self.worker.client_exited.connect(self.on_client_exit)
         self.voice=VoicePlayer(ROOT,self); self.preview_audio_clip=None
         self.bubble_window=SpeechBubble(self); self.voice.changed.connect(self.on_voice_changed)
         self.worker.status.connect(self.on_status); self.worker.quota.connect(self.on_quota); self.worker.threads.connect(self.on_threads)
@@ -183,13 +321,18 @@ class Pet(PetRenderer,QWidget):
         self.hovered=False; self.ignore_release=False
         self.click_timer=QTimer(self); self.click_timer.setSingleShot(True); self.click_timer.timeout.connect(lambda:self.react('pet'))
         self.hover_timer=QTimer(self); self.hover_timer.setSingleShot(True); self.hover_timer.timeout.connect(self.hover_react)
+        self.quota_press=None; self.quota_click_cancelled=False
+        self.lock_button=LockButton(self)
+        self.pointer_mode=PointerMode(self)
         icon_im=self.animation.frames[0].scaled(64,64,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
-        self.icon=QIcon(str(ROOT/'assets/shorekeeper.ico'))
+        from .app_icons import application_icon
+        self.icon=application_icon(ROOT,self.options['tray_icon_style'])
         if self.icon.isNull(): self.icon=QIcon(QPixmap.fromImage(icon_im))
         self.setWindowIcon(self.icon); QApplication.instance().setWindowIcon(self.icon)
         self.updates=UpdateController(self)
         self.tray=QSystemTrayIcon(self.icon,self); self.tray.setToolTip('守岸人 · DeepSeek · 点击唤醒/隐藏')
-        menu=QMenu(); menu.addAction('显示 / 隐藏',self.toggle_visible); menu.addAction('调整大小…',self.open_size); menu.addAction('自动跟随当前任务',lambda:self.select_thread('auto')); menu.addAction('陪伴面板',self.open_panel); menu.addAction('交互工作室',self.open_bindings); menu.addAction('外观、声音与迁移',self.open_preferences); menu.addAction('刷新余额',self.refresh_quota); menu.addAction('检查更新…',lambda:self.updates.check(True)); menu.addSeparator(); menu.addAction('退出守岸人',self.shutdown); self.tray.setContextMenu(menu)
+        # 上游把托盘菜单重构为 context_menu(tray=True)，我们的条目放在那个函数里。
+        self.tray.setContextMenu(self.context_menu(tray=True))
         self.tray.activated.connect(lambda reason:self.toggle_visible() if reason==QSystemTrayIcon.ActivationReason.Trigger else None)
         if not offline: self.tray.show()
         self.timer=QTimer(self); self.timer.setInterval(25); self.timer.timeout.connect(self.tick); self.timer.start()
@@ -251,8 +394,20 @@ class Pet(PetRenderer,QWidget):
         if state==self.state: self.controller.enter(state,time.monotonic(),self.controller.owner)
         self.update_layout(); self.tick(); return ok
 
+    def on_client_exit(self):
+        if not self.offline and self.options['exit_with_deepseek']:self.shutdown()
+
     def watch_status(self):
+        from .startup import deepseek_process_tree
+        next_client_check=0
         while not self.stop_event.is_set():
+            now=time.monotonic()
+            if now>=next_client_check:
+                next_client_check=now+2
+                enabled=self.options['exit_with_deepseek']
+                try:parents=deepseek_process_tree() if enabled else {}
+                except OSError:parents=None
+                if self.client_lifetime.observe(parents,now,enabled):self.worker.client_exited.emit()
             try:
                 target=pathlib.Path(self.options['deepseek_home'] or DSH_HOME)
                 if self.monitor.home!=target:
@@ -266,18 +421,37 @@ class Pet(PetRenderer,QWidget):
 
     def watch_quota(self):
         while not self.stop_event.is_set():
-            self.refresh_event.clear()
+            ticket=self.quota_refresh.begin_read()
             try:
                 if (self.rate_client.executable,self.rate_client.deepseek_home)!=(self.options['deepseek_executable'],self.options['deepseek_home']):
                     self.rate_client.close(); self.rate_client=RateClient(self.options['deepseek_executable'],self.options['deepseek_home'])
-                self.worker.quota.emit(self.rate_client.read())
+                self.worker.quota_read.emit(ticket,self.rate_client.read())
             except Exception:
-                self.worker.quota.emit(dict(error='刷新暂时失败，显示最近记录。'))
+                self.worker.quota_read.emit(ticket,dict(error='刷新暂时失败，显示最近记录。'))
             self.refresh_event.wait(120)
 
     def refresh_quota(self):
-        self.refresh_event.set()
-        self.bubble_until=time.monotonic()+10
+        self.quota_refresh.request((self.options['deepseek_executable'],self.options['deepseek_home']))
+        self.update()
+
+    def quota_display_label(self):
+        return self.quota_refresh.label() or self.quota_label(compact=True)
+
+    def on_quota_read(self,ticket,result):
+        self.on_quota(result)
+        self.quota_refresh.finish(ticket,result)
+        self.update()
+
+    def update_quota_cursor(self,local=None):
+        from .presentation_size import edge_at
+        if not hasattr(self,'quota_rect'):return
+        if local is None:local=self.mapFromGlobal(QCursor.pos())
+        rect=self.quota_hit_rect()
+        if self.quota_resize.active or (not self.locked and edge_at(local,rect)):
+            shape=Qt.CursorShape.SizeHorCursor
+        elif rect.contains(local):shape=Qt.CursorShape.PointingHandCursor
+        else:shape=Qt.CursorShape.ArrowCursor
+        if self.cursor().shape()!=shape:self.setCursor(shape)
 
     def on_status(self, status):
         changed=status.get('state')!=self.live_status.get('state') or status.get('thread_id')!=self.live_status.get('thread_id')
@@ -304,24 +478,47 @@ class Pet(PetRenderer,QWidget):
     def on_quota(self, quota):
         # A slow cache read must never replace a newer live response.
         if quota.get('updated_at',0) and quota.get('updated_at',0)<self.quota_data.get('updated_at',0): return
-        if 'windows' in quota: self.quota_data=quota
+        if quota.get('error') and quota.get('status')!='signed-out' and self.quota_data: self.quota_data.update(error=quota['error'])
+        elif 'windows' in quota: self.quota_data=quota
         else: self.quota_data.update(quota)
         if self.panel: self.panel.refresh()
         self.update()
         self.update_layout()
 
     def on_threads(self, rows):
-        changed=[(r['id'],r['title']) for r in rows]!=[(r['id'],r['title']) for r in self.thread_list]
-        self.thread_list=rows
+        labels=[(r.get('id'),r.get('title')) for r in rows]
+        changed=labels!=[(r.get('id'),r.get('title')) for r in self.thread_list]
+        live=[(r.get('id'),r.get('state'),bool(r.get('active'))) for r in rows]
+        live_changed=live!=self.live_signature
+        self.thread_list=rows; self.live_signature=live
+        if changed: self.update()  # 圆钮上的会话数量跟着变化立刻重绘
         if changed and self.panel: self.panel.update_threads(rows)
         if changed and self.preferences: self.preferences.refresh_threads()
+        if self.session_popup and (changed or live_changed): self.session_popup.refresh()
 
     def select_thread(self,thread):
         self.monitor.selected=thread; self.settings['thread']=thread; ok=self.save_settings()
         self.clear_override()
         if self.panel: self.panel.update_threads(self.thread_list)
         if self.preferences: self.preferences.refresh_threads()
+        if self.session_popup: self.session_popup.refresh()
         return ok
+
+    def follow_thread(self,thread_id):
+        """只切换桌宠关注的会话，不抢你当前窗口的焦点。"""
+        return self.select_thread(thread_id)
+
+    def open_thread(self,thread_id):
+        """关注该会话，再把 DeepSeek Harness 窗口切到前台。"""
+        self.select_thread(thread_id)
+        self.open_deepseek()
+
+    def open_session_list(self):
+        """Status badge on the pet: every conversation, newest first. Click again to hide."""
+        if self.session_popup and self.session_popup.isVisible():
+            self.session_popup.hide(); return
+        if not self.session_popup: self.session_popup=SessionListPopup(self)
+        self.session_popup.show_near()
 
     def switch_animation(self, aid):
         if aid==self.animation_id: return
@@ -355,6 +552,8 @@ class Pet(PetRenderer,QWidget):
             if self.controller.owner=='preview' and self.preview_audio_clip is not None:
                 binding=dict(binding,audio_clips=[dict(self.preview_audio_clip,enabled=True)])
             self.voice.trigger(self.state,binding,self.options,preview=self.controller.owner=='preview',task=task_key(self.notification or self.live_status),notification=self.controller.owner=='notification'); self.update_layout()
+        self.lock_button.refresh_visibility()
+        self.pointer_mode.refresh()
         self.update_bubble()
         self.update()
 
@@ -363,10 +562,8 @@ class Pet(PetRenderer,QWidget):
         return balance_label(self.quota_data,compact)
 
     def quota_details(self):
-        lines=[self.quota_label()]
-        for wallet in self.quota_data.get('wallets',[]):
-            lines.append(('赠送余额' if wallet['bonus'] else '充值余额')+' · '+wallet['currency']+' '+wallet['balance'])
-        return '\n'.join(lines)+'\n包含充值与赠送余额；* 表示缓存或刷新失败\n拖动左右两侧调整大小；右键 → 刷新余额'
+        if not self.options['show_quota']: return ''
+        return '*表示额度未更新\n拖动余额框修改大小\n点击余额框刷新余额'
 
     def bubble_text(self):
         if hasattr(self,'bubble_window') and self.bubble_window.edge_resize.active: return self.bubble_window.edge_resize.text
@@ -391,16 +588,39 @@ class Pet(PetRenderer,QWidget):
         for key,value in {'state':self.state_title(self.bubble_state()),'quota':self.quota_label(),'task':context.get('title',''),'progress':context.get('message','')}.items(): text=text.replace('{'+key+'}',value)
         return text
 
+    def event(self,event):
+        if event.type()==QEvent.Type.ToolTip:
+            self.setToolTip(self.quota_details())
+        return super().event(event)
+
     def mousePressEvent(self, event):
+        # 状态圆钮优先响应：它是我们的会话列表入口，不能落到拖动/余额逻辑里。
+        if event.button()==Qt.MouseButton.LeftButton and self.status_hit_rect().contains(event.position()):
+            self.click_timer.stop(); self.hover_timer.stop(); self.drag_offset=None
+            self.open_session_list(); event.accept(); return
+        # 上游新增的余额条按压状态
+        self.quota_press=None; self.quota_click_cancelled=False
         if self.quota_resize.begin(event,self.quota_hit_rect(),self.quota_base_width*self.scale_factor):
             self.drag_offset=None; return
+        if event.button()==Qt.MouseButton.LeftButton and self.quota_hit_rect().contains(event.position()):
+            self.hover_timer.stop(); self.click_timer.stop(); self.drag_offset=None
+            self.quota_press=event.globalPosition(); event.accept(); return
+        if self.locked: event.accept(); return
         if event.button()==Qt.MouseButton.LeftButton:
             if not self.pet_rect.contains(event.position()/self.scale_factor): event.accept(); return
             self.hover_timer.stop(); self.click_timer.stop(); self.ignore_release=False
             self.drag_offset=event.globalPosition().toPoint()-self.pos(); self.drag_origin=event.globalPosition().toPoint(); self.dragged=False
 
     def mouseMoveEvent(self, event):
+        self.lock_button.refresh_visibility()
+        self.pointer_mode.refresh()
+        self.update_quota_cursor(event.position())
+        if self.quota_press is not None:
+            if (event.globalPosition()-self.quota_press).manhattanLength()>QApplication.startDragDistance(): self.quota_click_cancelled=True
+            event.accept(); return
+        if self.locked: event.accept(); return
         if self.quota_resize.move(event,self.quota_hit_rect()): return
+        self.update_quota_cursor(event.position())
         if self.drag_offset is not None and event.buttons()&Qt.MouseButton.LeftButton:
             if (event.globalPosition().toPoint()-self.drag_origin).manhattanLength()>6:
                 if not self.dragged: self.react('drag')
@@ -409,6 +629,13 @@ class Pet(PetRenderer,QWidget):
 
     def mouseReleaseEvent(self, event):
         if self.quota_resize.finish(event): return
+        if event.button()==Qt.MouseButton.LeftButton and self.quota_press is not None:
+            moved=(event.globalPosition()-self.quota_press).manhattanLength()>QApplication.startDragDistance()
+            refresh=not moved and not self.quota_click_cancelled and self.quota_hit_rect().contains(event.position())
+            self.quota_press=None
+            if refresh: self.refresh_quota()
+            event.accept(); return
+        if self.locked: event.accept(); return
         if event.button()!=Qt.MouseButton.LeftButton: return
         if self.ignore_release:
             self.ignore_release=False; self.drag_offset=None; return
@@ -421,11 +648,13 @@ class Pet(PetRenderer,QWidget):
         self.drag_offset=None
 
     def mouseDoubleClickEvent(self, event):
+        if self.locked: event.accept(); return
         if event.button()==Qt.MouseButton.LeftButton and self.pet_rect.contains(event.position()/self.scale_factor):
             self.click_timer.stop(); self.ignore_release=True
             self.hover_timer.stop(); self.react('doubleclick')
 
     def wheelEvent(self,event):
+        if self.locked: event.accept(); return
         if event.modifiers()&Qt.KeyboardModifier.ControlModifier and event.angleDelta().y():
             self.hover_timer.stop(); self.click_timer.stop()
             self.set_scale(round((self.requested_scale+event.angleDelta().y()/120*.05)*100)/100)
@@ -433,7 +662,10 @@ class Pet(PetRenderer,QWidget):
         else: event.ignore()
 
     def enterEvent(self,event):
-        self.hover_timer.start(1000); super().enterEvent(event)
+        self.lock_button.refresh_visibility()
+        self.update_quota_cursor()
+        if not self.locked: self.hover_timer.start(1000)
+        super().enterEvent(event)
 
     def leaveEvent(self,event):
         if self.quota_resize.active: super().leaveEvent(event); return
@@ -443,26 +675,48 @@ class Pet(PetRenderer,QWidget):
         super().leaveEvent(event)
 
     def hover_react(self):
+        if self.locked or self.lock_button.geometry().contains(self.mapFromGlobal(QCursor.pos())): return
         local=self.mapFromGlobal(QCursor.pos())/self.scale_factor
         if not self.quota_resize.active and self.drag_offset is None and not self.override and not self.hovered and self.underMouse() and self.pet_rect.contains(local):
             self.hovered=True; self.react('hover')
 
-    def context_menu(self):
+    @property
+    def locked(self): return self.options.get('interaction_locked',False)
+
+    def context_menu(self,tray=False):
         menu=QMenu(self)
-        menu.addAction('摸摸头',lambda:self.react('pet')); menu.addAction('递一杯奶茶',lambda:self.react('feed'))
-        menu.addAction('交互工作室 · GIF / 语音与配对气泡',self.open_bindings)
-        menu.addAction('调整大小…',self.open_size)
-        menu.addAction('外观、声音与迁移',self.open_preferences)
-        follow=menu.addAction('自动跟随当前任务',lambda:self.select_thread('auto')); follow.setCheckable(True); follow.setChecked(self.monitor.selected=='auto')
-        menu.addAction('刷新余额',self.refresh_quota); menu.addAction('打开 DeepSeek Harness',self.open_deepseek)
-        menu.addAction('检查更新…',lambda:self.updates.check(True))
-        quiet=menu.addAction('安静陪伴'); quiet.setCheckable(True); quiet.setChecked(self.quiet); quiet.triggered.connect(self.set_quiet)
-        menu.addSeparator(); menu.addAction('暂时收起（托盘恢复）',self.hide); menu.addAction('退出守岸人',self.shutdown); return menu
+        if tray: menu.addAction('显示 / 隐藏',self.toggle_visible)
+        else:
+            for label,state in [('摸摸头','pet'),('递一杯奶茶','feed')]:
+                action=menu.addAction(label,lambda checked=False,state=state:self.react(state)); action.setEnabled(not self.locked)
+        # 我们新增的会话列表入口：托盘与右键菜单都保留
+        menu.addAction('会话状态列表 · 全部对话',self.open_session_list)
+        follow=menu.addAction('自动跟随当前任务',lambda:self.select_thread('auto'))
+        follow.setCheckable(True); follow.setChecked(self.monitor.selected=='auto')
+        menu.addAction('设置…',self.open_preferences)
+        for label,key in [('安静陪伴（静音）','audio_muted')]:
+            action=menu.addAction(label); action.setCheckable(True); action.setChecked(self.options[key])
+            action.triggered.connect(lambda checked,key=key:self.set_option(key,checked))
+        def refresh():
+            balance_action.setText('隐藏余额框' if self.options['show_quota'] else '显示余额框')
+            for action in menu.actions():
+                if action.text()=='安静陪伴（静音）': action.setChecked(self.options['audio_muted'])
+                elif action.text() in ('摸摸头','递一杯奶茶'): action.setEnabled(not self.locked)
+                elif action.text()=='自动跟随当前任务': action.setChecked(self.monitor.selected=='auto')
+        menu.aboutToShow.connect(refresh)
+        menu.addSeparator()
+        menu.addAction('刷新余额',self.refresh_quota)
+        balance_action=menu.addAction('隐藏余额框' if self.options['show_quota'] else '显示余额框',
+            lambda:self.set_option('show_quota',not self.options['show_quota']))
+        menu.addSeparator()
+        if not tray: menu.addAction('暂时收起（托盘恢复）',self.hide)
+        menu.addAction('关闭守岸人',self.shutdown); return menu
 
     def contextMenuEvent(self,event):
         menu=self.context_menu(); menu.exec(event.globalPos()); menu.deleteLater()
 
     def react(self,state,duration=None):
+        if self.locked: return
         self.preview_id=None; self.override_text=''; self.controller.enter(state,time.monotonic(),'interaction',hard_limit=duration); self.tick()
 
     def preview(self,aid):
@@ -479,32 +733,40 @@ class Pet(PetRenderer,QWidget):
             self.preview_id=None; self.override_text=''; self.controller.enter(state,time.monotonic(),'preview'); self.tick(); self.show(); self.raise_()
         finally: self.preview_audio_clip=None
 
-    def open_bindings(self):
-        if not self.binding_editor: self.binding_editor=BindingEditor(self,CATALOG,ASSETS,ROOT)
-        self.binding_editor.show(); self.binding_editor.raise_(); self.binding_editor.activateWindow()
+    def open_bindings(self): self.open_preferences('交互工作室')
 
-    def open_preferences(self):
-        if not self.preferences: self.preferences=Preferences(self)
-        self.preferences.refresh_controls(); self.preferences.show(); self.preferences.raise_(); self.preferences.activateWindow()
+    def open_preferences(self,page=None):
+        if not self.preferences:
+            self.preferences=Preferences(self,CATALOG,ASSETS,ROOT); self.binding_editor=self.preferences.editor
+        self.preferences.refresh_controls()
+        if isinstance(page,str): self.preferences.select_page(page)
+        self.preferences.show(); self.preferences.raise_(); self.preferences.activateWindow()
 
-    def open_size(self):
-        if not self.size_dialog: self.size_dialog=SizeDialog(self)
-        self.size_dialog.control.refresh(); self.size_dialog.show(); self.size_dialog.raise_(); self.size_dialog.activateWindow()
+    def open_size(self): self.open_preferences('字体与大小')
 
     def audio_directory(self):
         path=pathlib.Path(self.options['audio_directory'] or 'audio'); return path if path.is_absolute() else ROOT/path
 
     def set_option(self,key,value):
+        if key=='show_quota' and value is False:
+            self.quota_press=None; self.quota_click_cancelled=True
+            self.quota_resize.finish(); self.unsetCursor()
         if key=='launch_with_deepseek' and not self.offline:
             from .startup import configure
             configure(bool(value),ROOT)
         self.options[key]=value; self.settings['appearance']=dict(self.options); self.options=appearance(self.settings)
         ok=self.save_settings(); self.apply_style(); self.update_layout(); self.update()
-        if key=='audio_enabled' and not value: self.voice.stop()
+        if key=='tray_icon_style':self.apply_icon()
+        if (key=='audio_enabled' and not value) or (key=='audio_muted' and value): self.voice.stop()
+        if key=='interaction_locked' and value: self.cancel_pointer_interaction()
+        if key in ('audio_muted','interaction_locked') and self.preferences: self.preferences.refresh_controls()
         if key.startswith('deepseek'): self.refresh_event.set()
+        if key in ('check_updates_periodic','update_interval_hours','ignored_update_version','update_snoozed_date'):
+            self.updates.reconfigure()
         return ok
 
     def quota_hit_rect(self):
+        if not self.options['show_quota']: return QRectF()
         r=self.quota_rect; s=self.scale_factor
         return QRectF(r.x()*s,r.y()*s,r.width()*s,r.height()*s)
 
@@ -520,6 +782,13 @@ class Pet(PetRenderer,QWidget):
         self.update_layout(); self.update()
         if on: self.show()
 
+    def apply_icon(self):
+        from .app_icons import application_icon
+        icon=application_icon(ROOT,self.options['tray_icon_style'])
+        if icon.isNull():return
+        self.icon=icon;QApplication.instance().setWindowIcon(icon);self.tray.setIcon(icon)
+        for window in QApplication.topLevelWidgets():window.setWindowIcon(icon)
+
     def apply_style(self):
         QApplication.instance().setFont(font(self.options['font_family'],self.options['ui_font_size']))
         for dialog in (self.panel,self.binding_editor,self.preferences,self.size_dialog):
@@ -527,22 +796,30 @@ class Pet(PetRenderer,QWidget):
 
     def apply_settings(self,data):
         data=migrate_settings(data)
+        self.voice.stop()
         if not self.offline:
             from .startup import configure
             configure(appearance(data)['launch_with_deepseek'],ROOT)
         self.settings=data; self.pack=data.get('pack','163')
         if self.pack not in PACKS: self.pack='163'
         self.refresh_assets()
-        self.bindings=BindingMap(PACKS,ASSETS,ONESHOT,data.get('bindings'),baseline=default_bindings(ROOT)); self.options=appearance(data); self.quiet=bool(data.get('quiet',False)); self.show_notes=bool(data.get('show_notes',True))
+        self.bindings=BindingMap(PACKS,ASSETS,ONESHOT,data.get('bindings'),baseline=default_bindings(ROOT)); self.options=appearance(data); self.show_notes=bool(data.get('show_notes',True))
+        if self.locked: self.cancel_pointer_interaction()
         self.requested_scale=normalize_scale(data.get('scale',1)); self.scale_factor=self.requested_scale
         self.font_families=load_fonts(ROOT); self.monitor.selected=data.get('thread','auto'); self.cache.clear(); self.animation=self.get_animation(self.binding(self.state)['asset']); self.animation_id=self.binding(self.state)['asset']
-        self.set_top(bool(data.get('on_top',True))); self.save_settings(); self.clear_override(); self.apply_style(); self.update_layout(); self.refresh_quota()
+        self.set_top(bool(data.get('on_top',True))); self.save_settings(); self.clear_override(); self.apply_style(); self.apply_icon(); self.update_layout(); self.refresh_quota()
         if self.binding_editor: self.binding_editor.populate_gallery(); self.binding_editor.load_selection()
 
     def set_pack(self,pack):
         self.pack=pack; self.settings['pack']=pack; self.save_settings(); self.clear_override()
         if self.binding_editor: self.binding_editor.load_selection()
-    def set_quiet(self,value): self.quiet=value; self.settings['quiet']=value; self.save_settings(); self.update()
+    def cancel_pointer_interaction(self):
+        self.hover_timer.stop(); self.click_timer.stop(); self.hovered=False
+        self.quota_press=None
+        self.drag_offset=None; self.drag_origin=None; self.dragged=False; self.ignore_release=True
+        self.quota_resize.finish(); self.bubble_window.edge_resize.finish(); self.unsetCursor(); self.bubble_window.unsetCursor()
+        if self.controller.owner=='interaction': self.clear_override()
+
     def set_notes(self,value): self.show_notes=value; self.settings['show_notes']=value; self.save_settings(); self.update()
     def set_scale(self,value):
         self.requested_scale=normalize_scale(value); self.update_layout(); self.clamp_position(); self.update()
@@ -575,15 +852,20 @@ class Pet(PetRenderer,QWidget):
             save_atomic(SETTINGS,self.settings); return True
         except OSError: return False
 
-    def open_panel(self):
-        if not self.panel: self.panel=Panel(self)
-        self.panel.refresh(); self.panel.show(); self.panel.raise_(); self.panel.activateWindow()
+    def open_panel(self): self.open_preferences()
 
     def open_deepseek(self):
-        import subprocess
-        from .bridge import discover_deepseek
-        executable=discover_deepseek(self.options['deepseek_executable'])
-        if executable: subprocess.Popen([executable])
+        """已开窗就切到前台，没开窗就启动客户端。"""
+        from . import harness_window
+        try:
+            status=harness_window.open_harness(self.options.get('deepseek_executable',''))
+        except Exception:
+            status='missing'
+        if status in ('denied','missing'):
+            text=('没能把 DeepSeek Harness 切到前台，任务栏已闪烁提示。' if status=='denied'
+                  else '没找到 DeepSeek Harness，请先确认它已安装。')
+            self.tray.showMessage('守岸人 · DeepSeek',text,QSystemTrayIcon.MessageIcon.Information,4000)
+        return status
 
     def toggle_visible(self):
         if self.isVisible(): self.hide()
@@ -591,6 +873,7 @@ class Pet(PetRenderer,QWidget):
 
     def shutdown(self):
         self.updates.close()
+        if self.session_popup: self.session_popup.timer.stop(); self.session_popup.close()
         self.stop_event.set(); self.refresh_event.set(); self.timer.stop(); self.tray.hide()
         self.voice.stop(); self.save_settings()
         self.rate_client.close(); QApplication.instance().exit(0)
@@ -600,7 +883,9 @@ class Pet(PetRenderer,QWidget):
 
     def write_health(self):
         data=dict(version=VERSION,pid=os.getpid(),updated_at=time.time(),state=self.state,visible=self.isVisible(),quota_source=self.quota_data.get('source'),quota_updated_at=self.quota_data.get('updated_at'),quota_available=bool(self.quota_data.get('wallets')),rate_error=self.quota_data.get('error'),thread_count=len(self.thread_list),animation=self.animation_id,custom_bindings=len(self.bindings.overrides),font=self.options['bubble_font_family'])
-        data.update(update_status=self.updates.status,update_check_pending=self.updates.busy)
+        data.update(audio_muted=self.options['audio_muted'],interaction_locked=self.locked,quota_refresh_status=self.quota_refresh.label())
+        data['update_token']=os.environ.get('SHOREKEEPER_UPDATE_TOKEN','')
+        data.update(update_status=self.updates.status,update_check_pending=self.updates.busy,client_seen=self.client_lifetime.seen,client_exit_pending=self.client_lifetime.missing_since is not None)
         data.update(follow=self.monitor.selected,thread_id=self.live_status.get('thread_id'),live_state=self.live_status.get('state'),owner=self.controller.owner,scale=self.requested_scale,display_scale=self.scale_factor,window_size=[self.width(),self.height()])
         try:
             (ROOT/'runtime.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -610,8 +895,8 @@ def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--preview',action='store_true'); parser.add_argument('--smoke-test',action='store_true'); parser.add_argument('--capture-after',type=int,default=0); parser.add_argument('--bindings',action='store_true'); parser.add_argument('--settings',action='store_true'); parser.add_argument('--verify-package',action='store_true'); parser.add_argument('--verify-update-check',action='store_true'); parser.add_argument('--verify-connection',action='store_true'); args=parser.parse_args()
     if args.verify_update_check:
         from .updates import check_latest
-        result=check_latest()
-        report=dict(ok=result.status!='unavailable',status=result.status,latest=result.version,url=result.url,version=VERSION,frozen=bool(getattr(sys,'frozen',False)))
+        result=check_latest(source=appearance(load_settings())['update_source'])
+        report=dict(ok=result.status!='unavailable',status=result.status,source=result.source,latest=result.version,url=result.url,version=VERSION,frozen=bool(getattr(sys,'frozen',False)))
         (ROOT/'update-check.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
         return 0 if report['ok'] else 1
     if args.verify_connection:
@@ -628,19 +913,25 @@ def main():
     if not args.preview and not args.smoke_test and not args.verify_package and not lock.tryLock(100): return 0
     if not args.preview and not args.smoke_test and not args.verify_package:
         from .startup import configure
-        if appearance(load_settings())['launch_with_deepseek']:
+        if not os.environ.get('SHOREKEEPER_UPDATE_TOKEN') and appearance(load_settings())['launch_with_deepseek']:
             try:configure(True,ROOT)
             except OSError:pass
     pet=Pet(offline=args.preview or args.smoke_test or args.verify_package); pet.show()
+    if not pet.offline and getattr(sys,'frozen',False):
+        from .shortcuts import ensure_first_launch_shortcut
+        threading.Thread(target=ensure_first_launch_shortcut,args=(ROOT,),daemon=True).start()
     if args.bindings: pet.open_bindings()
     if args.settings: pet.open_preferences()
     health_timer=QTimer(); health_timer.timeout.connect(pet.write_health)
-    if not args.preview and not args.smoke_test: health_timer.start(5000)
+    if os.environ.get('SHOREKEEPER_UPDATE_TOKEN'): health_timer.start(1000)
+    elif not args.preview and not args.smoke_test: health_timer.start(5000)
     if args.capture_after:
         (ROOT/'qa').mkdir(exist_ok=True)
         QTimer.singleShot(args.capture_after*1000,lambda:pet.grab().save(str(ROOT/'qa/live-preview.png')))
     if args.verify_package:
         def verify():
+            import copy
+            saved_settings=copy.deepcopy(pet.settings)
             code=0
             try:
                 pet.options['volume']=0
@@ -653,19 +944,26 @@ def main():
                     decoder_ok=verify_decoder(directory); output_ok=verify_output(directory)
                 bubble_bounds=pet.bubble_window.width()<=pet.screen_area().width()
                 audio_mode=pet.binding_editor.controls['bubble_mode'].findText('自定义音频+字幕')>=0
-                resize_controls=all(key in pet.size_dialog.presentation_control.controls for key in ('bubble_width_ratio','quota_scale'))
+                resize_controls=all(key in pet.preferences.presentation_control.controls for key in ('bubble_width_ratio','quota_scale'))
                 from .startup import deepseek_processes
                 frequency_controls=all(pet.binding_editor.controls['audio_policy'].findData(mode)>=0 for mode in ('entry','session','occasional','turn'))
                 startup_control='launch_with_deepseek' in pet.preferences.controls
                 update_controls='check_updates_on_start' in pet.preferences.controls and not pet.updates.timer.isActive()
+                unified_settings=pet.binding_editor.window() is pet.preferences and not pet.binding_editor.isWindow()
+                safety_controls=all(key in pet.preferences.controls for key in ('audio_muted','interaction_locked'))
+                from .settings_checks import verify_controls
+                interaction_checks=verify_controls(pet)
                 desktop_detected=bool(deepseek_processes())
-                report=dict(ok=len(pet.font_families)>=2 and decoder_ok and output_ok and bubble_bounds and audio_mode and resize_controls and frequency_controls and startup_control and update_controls,update_controls=update_controls,audio_decoder=decoder_ok,audio_output=output_ok,bubble_bounds=bubble_bounds,audio_subtitle_mode=audio_mode,resize_controls=resize_controls,voice_frequency_controls=frequency_controls,startup_control=startup_control,desktop_detected=desktop_detected,version=VERSION,fonts=pet.font_families,assets=len(ASSETS),bindings=len(pet.bindings.overrides),root=str(ROOT),frozen=bool(getattr(sys,'frozen',False)),scale=pet.requested_scale,size_control_percent=pet.size_dialog.control.percent.value())
+                report=dict(ok=all(interaction_checks.values()) and unified_settings and safety_controls and len(pet.font_families)>=2 and decoder_ok and output_ok and bubble_bounds and audio_mode and resize_controls and frequency_controls and startup_control and update_controls,unified_settings=unified_settings,safety_controls=safety_controls,update_controls=update_controls,audio_decoder=decoder_ok,audio_output=output_ok,bubble_bounds=bubble_bounds,audio_subtitle_mode=audio_mode,resize_controls=resize_controls,voice_frequency_controls=frequency_controls,startup_control=startup_control,desktop_detected=desktop_detected,version=VERSION,fonts=pet.font_families,assets=len(ASSETS),bindings=len(pet.bindings.overrides),root=str(ROOT),frozen=bool(getattr(sys,'frozen',False)),scale=pet.requested_scale,size_control_percent=pet.preferences.size_control.percent.value())
+                report.update(interaction_checks)
                 (ROOT/'package-check.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
             except Exception:
                 import traceback
                 (ROOT/'startup-error.log').write_text(traceback.format_exc(),encoding='utf8'); code=1
             finally:
-                pet.timer.stop(); pet.voice.stop(); app.exit(code)
+                pet.timer.stop(); pet.voice.stop()
+                save_atomic(SETTINGS,saved_settings,backup=False)
+                app.exit(code)
         QTimer.singleShot(500,verify)
     if args.smoke_test:
         (ROOT/'qa').mkdir(exist_ok=True)
@@ -673,7 +971,7 @@ def main():
         pet.quota_data=dict(windows=[dict(remaining=81,label='每周',name='deepseek',resets_at=1791655436)],updated_at=time.time(),source='demo',wallets=[dict(currency='CNY',balance='12.34',bonus=False)])
         def capture():
             pet.transition_old=None; pet.tick(); pet.grab().save(str(ROOT/'qa/desktop-preview.png'))
-            pet.open_panel(); pet.panel.grab().save(str(ROOT/'qa/panel-preview.png')); app.exit(0)
+            pet.open_panel(); pet.preferences.grab().save(str(ROOT/'qa/panel-preview.png')); app.exit(0)
         QTimer.singleShot(700,capture)
     app.aboutToQuit.connect(pet.updates.close)
     app.aboutToQuit.connect(pet.stop_event.set)

@@ -1,8 +1,10 @@
 # Shorekeeper DeepSeek Desktop Pet
 
+**v0.6.2**: The update window is clearer: a manual check offers one “一键更新” action and readable notes. One-click updates now verify a publisher signature, so a third-party mirror cannot forge an installable update. Periodic silent update reminders and one-click program updates. Your settings and media stay in place; interrupted installs recover the previous version.
+
 **A companion for the official DeepSeek Harness Windows client, with custom expressions, voice clips, and speech bubbles.**
 
-[Download for Windows](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/latest) · [Watch the demo](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.1.0/shorekeeper-landscape-deepseek-v010.mp4) · [User guide (Chinese)](docs/USAGE.md) · [Report an issue](https://github.com/Doya16/shorekeeper-deepseek-pet/issues) · [中文](README.md)
+[Download for Windows](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/latest) · [Watch the demo](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.5.1/shorekeeper-deepseek-landscape-v051-r2.mp4) · [User guide (Chinese)](docs/USAGE.md) · [Report an issue](https://github.com/Doya16/shorekeeper-deepseek-pet/issues) · [中文](README.md)
 
 ![Shorekeeper DeepSeek Desktop Pet: custom expressions and voice interactions](docs/social/cover-landscape.jpg)
 
@@ -12,39 +14,90 @@ For **Windows 10/11 x64**. The complete package includes **three packs with 83 G
 
 ## Preview
 
-![Task stages and separate completion notifications](docs/social/showcase.gif)
+![Current task interactions and new desktop controls](docs/social/showcase.gif)
 
-[Landscape demo](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.1.0/shorekeeper-landscape-deepseek-v010.mp4) · [Portrait demo](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.1.0/shorekeeper-portrait-deepseek-v010.mp4)
+[Landscape · 1920×1080](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.5.1/shorekeeper-deepseek-landscape-v051-r2.mp4) · [Portrait · 1080×1920](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.5.1/shorekeeper-deepseek-portrait-v051-r2.mp4)
 
-Recorded with **v0.1.0**, the roughly two-minute demo covers task states, concurrent completion notifications, mouse interactions, GIF selection, voice/caption pairs, playback frequency, resizing, account balance, and portable export. The Harness window, projects, dialogue, and balance are simulated examples; the pet and settings show actual widgets from that release. Later features, including update notifications, are described below.
+The **03:17** walkthrough uses **v0.5.1**, with new recordings of the pet and current settings. It covers task interactions, multiple conversation notifications, custom media, lock and click-through, mute, balance refresh, sizing, app icons, client lifecycle, update sources, and complete migration. Portrait and landscape use separate layouts.
+
+**The client window, tasks, balances and available-update notification are examples.** Pet animations and settings are rendered from the current application. The video uses Chinese labels and character voices.
+
+| Time | Demonstration |
+| --- | --- |
+| 00:01 | Task states and one opening voice per turn |
+| 00:30 | Separate completion notifications |
+| 00:50 | Dragging, dropping, double-clicking and head pats |
+| 01:06 | Hover lock, click-through, fade and mute |
+| 01:24 | Visible balance refresh and account display |
+| 01:36 | GIFs, playback, paired audio/captions and frequency |
+| 02:14 | Sizing, fonts and app-badged icons |
+| 02:31 | Client lifecycle, update notifications and download sources |
+| 02:53 | Save, migration and desktop shortcuts |
+| 03:09 | Download and setup |
 
 ![One conversation finishes while another continues editing](docs/social/multi-project.jpg)
+
+| Lock and click-through | Visible balance refresh |
+| --- | --- |
+| ![Hover lock and fade](docs/social/lock-click-through.jpg) | ![Inline refresh state](docs/social/balance-refresh.jpg) |
 
 ## Get started
 
 1. Install the Windows client from the [official DeepSeek Harness website](https://www.deepseek.com/harness/), open it, and sign in.
-2. Download [Shorekeeper-DeepSeek-Windows-v0.1.2.zip](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.1.2/Shorekeeper-DeepSeek-Windows-v0.1.2.zip), extract it completely, and run **守岸人DeepSeek桌宠启动.exe**.
-3. Fully quit Harness from its tray menu. Right-click the pet → **外观、声音与迁移 → 连接 DeepSeek → 安装 / 更新 Harness 连接插件** (Appearance, Sound & Migration → Connect to DeepSeek → Install / Update Harness Connection Plugin).
+2. Download [Shorekeeper-DeepSeek-Windows-v0.6.2.zip](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.6.2/Shorekeeper-DeepSeek-Windows-v0.6.2.zip), extract it completely, and run **守岸人DeepSeek桌宠启动.exe**.
+3. Fully quit Harness from its tray menu. Right-click the pet → **设置 → 连接 DeepSeek → 安装 / 更新 Harness 连接插件** (Settings → Connect to DeepSeek → Install / Update Harness Connection Plugin).
 4. Reopen Harness and start a task. The pet follows the most recently active conversation.
 
 Repeat steps 3–4 when updating the connection plugin. No additional API key is required. The tested client is **DeepSeek Harness 0.2.0-rc.2 / Windows x64**.
 
+## App badges and desktop shortcuts
+
+The default pet icon has a small app badge: a black-and-white GPT mark for Codex, or a blue whale for DeepSeek. Under **设置 → 桌面与声音 → 底部栏与托盘图标**, choose **纯净图标** (plain) or **APP 小标** (badged). The taskbar/window and tray icons update immediately, and the preference travels with your settings.
+
+The extracted Windows app creates a desktop shortcut on its first normal launch. If deleted, recreate it under **设置 → 保存与迁移 → 创建桌面快捷方式**. On another computer, extract the complete package and run it once to create a shortcut pointing to its new location.
+
+![Desktop shortcut settings](docs/demo/shortcut-settings.png)
+
+## Settings, mute and lock
+
+Right-click the pet or tray icon → **设置…** (Settings). One window contains size and fonts, the interaction studio, desktop and sound, save and migration, client connection, and updates.
+
+- **安静陪伴（静音）** (Mute) immediately stops current and queued audio, and silences automatic speech and previews. Unmuting restores the original volume without replaying missed speech.
+- **Top lock button:** move the pointer over the character to reveal its small lock at the top center. Click to lock or unlock; it hides when the pointer leaves. Its tooltip shows **点击锁定** (Click to lock) or **点击解锁** (Click to unlock). When locked, clicks through the character reach the window underneath. Hovering fades the character; moving away restores it. The lock remains clickable to unlock, and the balance box remains clickable to refresh. Task animations and notifications continue.
+- **Hover fade:** adjust it under Settings → Desktop & audio, alongside lock-button size and transparency.
+- **Balance refresh:** hovering inside the box shows a hand cursor. Click to show **刷新中…** (Refreshing…) in the box; it returns to the latest value when the read finishes. A failure briefly shows **刷新失败** (Refresh failed) before restoring the last reading. Repeated clicks are combined. The edges still resize the box while unlocked.
+- **Compact menu:** use **设置…** for preferences and **关闭守岸人** to close. The tray also gives access to the lock setting.
+- Both options save automatically and travel with exported settings and portable packages. The old quiet-companion option becomes mute; locking is off by default.
+
+<img src="docs/demo/quota-refresh.png" width="180" alt="余额框内刷新反馈（示例）">
+
+<img src="docs/demo/pet-lock.png" width="180" alt="桌宠顶部小锁（示例）">
+
+![Unified desktop and sound settings](docs/demo/unified-settings.png)
+
+## Follow client exit
+
+Under **设置 → 连接 DeepSeek**, startup and shutdown follow are separate options. **随 DeepSeek 完全退出而关闭** is enabled by default: the pet closes about 8–10 seconds after the last client instance fully exits. A client still running in the tray keeps the pet open. Brief restarts are tolerated; launching the pet before the client does not immediately close it.
+
+![连接与退出联动](docs/demo/connection-settings.png)
+
 ## Checking for updates and keeping your settings
 
-Current version: **v0.1.2**. After each launch, the pet checks GitHub for a stable release and prompts you when a newer one is available. Right-click → **检查更新…** (Check for updates) to check manually.
+Current version: **v0.6.2**. After each launch, the pet checks for a stable release and prompts you when a newer one is available. Right-click → **设置 → 版本与更新 → 立即检查更新** (Check for updates) to check manually.
 
-Open **外观、声音与迁移 → 版本与更新** (Appearance, Sound & Migration → Version & Updates) to disable startup checks, check immediately, or restore ignored version reminders. A new-version prompt lets you open the release page, back up settings and media, remind you later, or ignore that version. A failed background check does not interrupt the pet.
+Open **设置 → 版本与更新** (Settings → Version & Updates) to disable startup checks, check immediately, or restore ignored version reminders. A new-version prompt lets you open the release page, back up settings and media, remind you later, or ignore that version. A failed background check does not interrupt the pet.
+
+Choose **自动选择** (automatic), **GitHub 官方源** (direct), or **镜像加速（中国大陆网络）** (mirror) under Version & Updates. Automatic mode tries GitHub first and falls back when GitHub gives no result (timeout, connection failure or an HTTP error). A fixed choice never silently switches. The update window shows the route and offers the one-click update. The complete package and program patch are on the release page.
+
+The third-party [GH-Proxy](https://gh-proxy.com/docs/github-accelerator) mirror only carries public release metadata and downloads; one-click updates always verify the publisher signature and refuse to install otherwise. It it may lag behind GitHub. Source and exit preferences travel with exported settings.
 
 ![Version and update settings](docs/demo/update-settings.png)
 
-**Updates are downloaded and installed manually.** Choose the package for your installed version:
+Use **Settings → Version & Updates → 一键更新** (One-click update), or **更新并重启守岸人** on the silent update card. The program downloads, verifies, installs and restarts while retaining your settings, GIFs, voices, captions and fonts. Checks run every 6 hours by default (configurable). Voice captions temporarily cover the update card; it returns afterward. **今日不再提醒** dismisses it for the rest of the local day, including after restart.
 
-| Your installation | How to update |
-| --- | --- |
-| v0.1.1 | Download the [v0.1.2 program patch](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.1.2/Shorekeeper-DeepSeek-Update-Check-Patch-v0.1.2.zip), exit the pet, extract over its existing folder, and restart |
-| New installation or another older version | Extract the [v0.1.2 full package](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.1.2/Shorekeeper-DeepSeek-Windows-v0.1.2.zip) into a new folder, then import your exported settings and assets ZIP if you have one |
+An interrupted download leaves the installed program intact; abandoned downloads are cleaned on the next launch. Interrupted installations and failed startup checks restore the previous program and settings.
 
-The program patch preserves **GIFs / images, audio, bubble captions, fonts, and personal settings**. Before updating, use **保存与迁移 → 导出配置与素材包（ZIP）** (Save & Migrate → Export Settings & Assets ZIP) to keep a backup. Extract program patches into the application folder; do not import them as settings.
+Users upgrading from an earlier version must first install the [v0.6.2 program patch](https://github.com/Doya16/shorekeeper-deepseek-pet/releases/download/v0.6.2/Shorekeeper-DeepSeek-Settings-Patch-v0.6.2.zip): exit the pet, extract it into the existing folder, then restart. Subsequent updates can be completed inside the pet.
 
 ## Features
 
@@ -65,7 +118,7 @@ The program patch preserves **GIFs / images, audio, bubble captions, fonts, and 
 
 ## Customization
 
-Right-click the pet → **交互工作室** (Interaction Studio). Select an action, then adjust its expression, bubble, and voice.
+Right-click the pet → **设置 → 交互工作室** (Interaction Studio). Select an action, then adjust its expression, bubble, and voice.
 
 | What to change | Where to find it |
 | --- | --- |
@@ -86,7 +139,7 @@ Supported images: GIF, animated WebP, PNG, JPG/JPEG, and static WebP. Audio: WAV
 
 ![Export settings and media together](docs/social/portable-profile.jpg)
 
-Right-click → **外观、声音与迁移 → 保存与迁移 → 导出 Windows 便携完整包** (Appearance, Sound & Migration → Save & Migrate → Export Complete Portable Windows Package).
+Right-click → **设置 → 保存与迁移 → 导出 Windows 便携完整包** (Settings → Save & Migrate → Export Complete Portable Windows Package).
 
 Extract the package on the new computer, install and sign in to Harness, launch the pet, and install the connection plugin from its connection settings. Your GIFs, fonts, voices, captions, and settings travel with the package. Account credentials and chat history are not included.
 
